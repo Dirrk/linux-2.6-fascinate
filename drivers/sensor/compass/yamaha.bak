@@ -32,9 +32,7 @@
     { { 0,  -1,  0}, \
       { -1,  0,   0}, \
       { 0 , 0 ,  -1} }
-
-// Dirrk's edit 09/22/2010 successful build yamaha_b5
-
+#if defined(CONFIG_ATLAS_VER_B4) || defined(CONFIG_ATLAS_VER_B5)
 #define YAMAHA_GSENSOR_TRANSFORMATION    \
     {{ 0, -1,   0}, \
       { 1,   0,   0}, \
@@ -44,10 +42,7 @@
     {{ 1, 0,  0}, \
       { 0, 1,  0}, \
       { 0, 0,  1} }
-/*
-
-CHANGING DEFAULT 
-
+#else
 #define YAMAHA_GSENSOR_TRANSFORMATION    \
     {{ -1,    0,    0}, \
       {   0,  -1,    0}, \
@@ -58,18 +53,7 @@ CHANGING DEFAULT
       { 1,  0,   0}, \
       { 0 , 0, -1} }
 #endif
-Trying Vibrant configs (T959)
-GSENSOR
-{{ -1, 0, 0 } \
-{ 0, -1, 0 } \
-{ 0, 0, -1 }}
-MSENSOR
-{ { -1, 0, 0}, \
-{ 0, 1, 0}, \
-{ 0 , 0 , -1} }
-
-*/
-
+      
 #define YAMAHA_IOCTL_GET_MARRAY            _IOR('Y', 0x01, char[9])
 #define YAMAHA_IOCTL_GET_GARRAY            _IOR('Y', 0x02, char[9])
 
