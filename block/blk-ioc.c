@@ -5,7 +5,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/bio.h>
-#include <linux/bitmap.h>
+#include <linux/bitmap.h> /* jt1134 github */
 #include <linux/blkdev.h>
 #include <linux/bootmem.h>	/* for max_pfn/max_low_pfn */
 
@@ -15,13 +15,14 @@
  * For io context allocations
  */
 static struct kmem_cache *iocontext_cachep;
-
+//removing cfq_dtor(struct io_context *ioc)
 static void hlist_sched_dtor(struct io_context *ioc, struct hlist_head *list)
 {
 	if (!hlist_empty(list)) {
 		struct cfq_io_context *cic;
 
-		cic = list_entry(list->first, struct cfq_io_context, cic_list);
+                cic = list_entry(list->first, struct cfq_io_context, cic_list);
+
 		cic->dtor(ioc);
 	}
 }
@@ -41,7 +42,6 @@ int put_io_context(struct io_context *ioc)
 		rcu_read_lock();
 		if (ioc->aic && ioc->aic->dtor)
 			ioc->aic->dtor(ioc->aic);
-
 		hlist_sched_dtor(ioc, &ioc->cic_list);
 		hlist_sched_dtor(ioc, &ioc->bfq_cic_list);
 		rcu_read_unlock();
@@ -64,7 +64,6 @@ static void hlist_sched_exit(struct io_context *ioc, struct hlist_head *list)
 		cic->exit(ioc);
 	}
 	rcu_read_unlock();
-
 }
 
 /* Called by the exitting task */

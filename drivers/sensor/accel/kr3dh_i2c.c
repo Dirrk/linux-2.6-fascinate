@@ -313,7 +313,7 @@ int kr3dh_read_accel_xyz(kr3dhacc_t * acc)
 	data[1] = (~data[1] + 1);
 	data[2] = (~data[2] + 1);
 
-	if(1) // system_rev>=CONFIG_INSTINCTQ_REV05)
+	if(1) // system_rev>=CONFIG_INSTINCTQ_REV05) Derek just changed this from 1 to 0
 	{
 		if(data[0] & 0x80)
 			acc->x = (0x100-data[0])*(-1);

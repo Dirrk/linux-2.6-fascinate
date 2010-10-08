@@ -33,7 +33,7 @@
       { -1,  0,   0}, \
       { 0 , 0 ,  -1} }
 
-// Dirrk's edit 09/22/2010 successful build yamaha_b5
+// Dirrk's edit 
 
 #define YAMAHA_GSENSOR_TRANSFORMATION    \
     {{ 0, -1,   0}, \
@@ -46,8 +46,8 @@
       { 0, 0,  1} }
 /*
 
-CHANGING DEFAULT 
-
+Dirrk CHANGING DEFAULT
+:Default
 #define YAMAHA_GSENSOR_TRANSFORMATION    \
     {{ -1,    0,    0}, \
       {   0,  -1,    0}, \
@@ -58,7 +58,7 @@ CHANGING DEFAULT
       { 1,  0,   0}, \
       { 0 , 0, -1} }
 #endif
-Trying Vibrant configs (T959)
+Changing to Vibrant configs (T959)
 GSENSOR
 {{ -1, 0, 0 } \
 { 0, -1, 0 } \
@@ -67,6 +67,7 @@ MSENSOR
 { { -1, 0, 0}, \
 { 0, 1, 0}, \
 { 0 , 0 , -1} }
+
 
 */
 

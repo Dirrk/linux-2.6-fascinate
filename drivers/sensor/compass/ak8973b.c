@@ -1,10 +1,10 @@
- 
+
  /*****************************************************************************
  *
  * COPYRIGHT(C) : Samsung Electronics Co.Ltd, 2006-2015 ALL RIGHTS RESERVED
  *
  *****************************************************************************/
- 
+
 
 
 #include <linux/interrupt.h>
@@ -42,9 +42,9 @@ static atomic_t open_count;
 static atomic_t open_flag;
 static atomic_t reserve_open_flag;
 
-static atomic_t m_flag; 
-static atomic_t a_flag; 
-static atomic_t t_flag; 
+static atomic_t m_flag;
+static atomic_t a_flag;
+static atomic_t t_flag;
 static atomic_t mv_flag;
 static atomic_t	p_flag;
 
@@ -52,7 +52,7 @@ static short akmd_delay = 0;
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static atomic_t suspend_flag = ATOMIC_INIT(0);
-#endif /* CONFIG_HAS_EARLYSUSPEND */ 
+#endif /* CONFIG_HAS_EARLYSUSPEND */
 
 /* following are the sysfs callback functions */
 
@@ -224,7 +224,6 @@ static void AKECS_Report_Value(short *rbuf)
 		input_report_abs(data->input_dev, ABS_DISTANCE, rbuf[12]);
 		gprintk("Proximity = %d\n", rbuf[12]);
 	}
-	
 	input_sync(data->input_dev);
 }
 
@@ -781,11 +780,12 @@ static ssize_t ak_fs_read(struct device *dev, struct device_attribute *attr, cha
 	int count;
 	short mag_sensor[4] ={0, 0, 0, 0};
 
-	s3c_gpio_cfgpin(GPIO_MSENSE_IRQ, GPIO_INPUT);
-	s3c_gpio_setpull(GPIO_MSENSE_IRQ, S3C_GPIO_PULL_NONE);
+	s3c_gpio_cfgpin(GPIO_MSENS_IRQ, GPIO_INPUT);
+	s3c_gpio_setpull(GPIO_MSENS_IRQ, S3C_GPIO_PULL_NONE);
 
+//Changing these lines from GPIO_MSENS_IRQ to IRQ_COMPASS_INT 2 above and one below
 	AKECS_SetMeasure();
-	while(!gpio_get_value(GPIO_MSENSE_IRQ));
+	while(!gpio_get_value(IRQ_COMPASS_INT));
 	AKECS_GetData(mag_sensor);
 	AKECS_DATA_Measure();
 	count = sprintf(buf,"x: %d, y: %d, z: %d\n", mag_sensor[1], mag_sensor[2], mag_sensor[3] );

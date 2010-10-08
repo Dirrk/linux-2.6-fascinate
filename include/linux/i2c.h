@@ -433,7 +433,7 @@ static inline int i2c_add_driver(struct i2c_driver *driver)
  * and .remove() methods instead. */
 extern int __deprecated i2c_attach_client(struct i2c_client *);
 extern int __deprecated i2c_detach_client(struct i2c_client *);
-
+//Dirrk Edited this for v00
 extern struct i2c_client *i2c_use_client(struct i2c_client *client);
 extern void i2c_release_client(struct i2c_client *client);
 
