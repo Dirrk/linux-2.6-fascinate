@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.29
- * Fri Oct  8 21:39:51 2010
+ * Sat Oct  9 22:59:34 2010
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_VIDEO_V4L1_COMPAT 1
@@ -616,7 +616,7 @@
 #define CONFIG_REGULATOR_MAX8998 1
 #define CONFIG_VIDEO_V4L1 1
 #define CONFIG_MMC 1
-#define CONFIG_INITRAMFS_SOURCE "/android/samsung/git/voodoo-ramdisk-5"
+#define CONFIG_INITRAMFS_SOURCE "/android/samsung/git/fascinate_voodoo_initramfs"
 #define CONFIG_SND_UNIVERSAL_WM8994 1
 #define CONFIG_VIDEO_V4L2 1
 #define CONFIG_S3C_DEV_HSMMC 1
