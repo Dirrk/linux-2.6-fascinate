@@ -8,7 +8,6 @@ deps_initramfs := \
 /android/samsung/git/fascinate_voodoo_initramfs/system/etc/mtab \
 /android/samsung/git/fascinate_voodoo_initramfs/system/etc/ld.so.cache \
 /android/samsung/git/fascinate_voodoo_initramfs/res \
-/android/samsung/git/fascinate_voodoo_initramfs/res/mmcblk0p1_protectionmode.img.bz2 \
 /android/samsung/git/fascinate_voodoo_initramfs/res/images \
 /android/samsung/git/fascinate_voodoo_initramfs/res/images/indeterminate5.png \
 /android/samsung/git/fascinate_voodoo_initramfs/res/images/indeterminate6.png \
@@ -36,7 +35,6 @@ deps_initramfs := \
 /android/samsung/git/fascinate_voodoo_initramfs/res/voices/cancel-no-space.mp3 \
 /android/samsung/git/fascinate_voodoo_initramfs/res/voices/to-rfs.mp3 \
 /android/samsung/git/fascinate_voodoo_initramfs/res/voices/success.mp3 \
-/android/samsung/git/fascinate_voodoo_initramfs/res/mmcblk0p2_protectionmode.img.bz2 \
 /android/samsung/git/fascinate_voodoo_initramfs/res/mbr_voodoo \
 /android/samsung/git/fascinate_voodoo_initramfs/res/mbr_voodoo/fascinate \
 /android/samsung/git/fascinate_voodoo_initramfs/res/mbr_samsung \
@@ -206,7 +204,6 @@ deps_initramfs := \
 /android/samsung/git/fascinate_voodoo_initramfs/tmp/bootchart/stgloc \
 /android/samsung/git/fascinate_voodoo_initramfs/lpm.rc \
 /android/samsung/git/fascinate_voodoo_initramfs/init_logger.sh \
-/android/samsung/git/fascinate_voodoo_initramfs/voodoo.tar.gz \
 /android/samsung/git/fascinate_voodoo_initramfs/lib \
 /android/samsung/git/fascinate_voodoo_initramfs/lib/libcrypt-0.9.31.so \
 /android/samsung/git/fascinate_voodoo_initramfs/lib/libutil.so.0 \

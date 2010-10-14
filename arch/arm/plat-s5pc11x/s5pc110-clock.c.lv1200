@@ -88,7 +88,7 @@ static const u32 s5p_sys_clk_div0_tab_1GHZ[][DIV_TAB_MAX_FIELD] = {
 /*pms value table*/
 /*APLL(m, p, s), MPLL(m, p, s)*/
 static const u32 s5p_sys_clk_mps_tab_1GHZ[][6] = {
-        {250, 6, 1, 667, 12, 1},
+        {300, 6, 1, 667, 12, 1},
         {200, 6, 1, 667, 12, 1},
         {200, 6, 1, 667, 12, 1},
         {200, 6, 1, 667, 12, 1},
