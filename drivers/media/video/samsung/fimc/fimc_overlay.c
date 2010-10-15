@@ -1,9 +1,9 @@
-/* linux/drivers/media/video/samsung/fimc_cfg.c
+/* linux/drivers/media/video/samsung/fimc/fimc_overlay.c
+ *
+ * Copyright (c) 2010 Samsung Electronics Co., Ltd.
+ *		http://www.samsung.com/
  *
  * V4L2 Overlay device support file for Samsung Camera Interface (FIMC) driver
- *
- * Jonghun Han, Copyright (c) 2009 Samsung Electronics
- * 	http://www.samsungsemi.com/
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -22,115 +22,188 @@
 
 int fimc_try_fmt_overlay(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
-	u32 is_rotate = 0;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	int ctx_id = ((struct fimc_prv_data *)fh)->ctx_id;
+	struct fimc_ctx *ctx;
 
-	dev_info(ctrl->dev, "%s: called\n\
-			top(%d), left(%d), width(%d), height(%d)\n", \
-			__func__, f->fmt.win.w.top, f->fmt.win.w.left, \
+	u32 is_rotate = 0;
+	ctx = &ctrl->out->ctx[ctx_id];
+
+	fimc_info1("%s: top(%d) left(%d) width(%d) height(%d)\n", __func__,
+			f->fmt.win.w.top, f->fmt.win.w.left,
 			f->fmt.win.w.width, f->fmt.win.w.height);
 
-	if (ctrl->status != FIMC_STREAMOFF) {
-		dev_err(ctrl->dev, "FIMC is running\n");
-		return -EBUSY;
-	}
+	if (ctx->overlay.mode == FIMC_OVLY_NONE_SINGLE_BUF ||
+		(ctx->overlay.mode == FIMC_OVLY_NONE_MULTI_BUF))
+		return 0;
 
 	/* Check Overlay Size : Overlay size must be smaller than LCD size. */
-#if 1
-	// adde by jamie (2009.08.26)
-	if (ctrl->out->fbuf.base) return 0;
-#endif
-
-	is_rotate = fimc_mapping_rot_flip(ctrl->out->rotate, ctrl->out->flip);
+	is_rotate = fimc_mapping_rot_flip(ctx->rotate, ctx->flip);
 	if (is_rotate & FIMC_ROT) {	/* Landscape mode */
 		if (f->fmt.win.w.width > ctrl->fb.lcd_vres) {
-			dev_warn(ctrl->dev, "The width is changed %d -> %d\n",
+			fimc_warn("The width is changed %d -> %d\n",
 				f->fmt.win.w.width, ctrl->fb.lcd_vres);
-			f->fmt.win.w.width = ctrl->fb.lcd_vres;
+				f->fmt.win.w.width = ctrl->fb.lcd_vres;
 		}
 
 		if (f->fmt.win.w.height > ctrl->fb.lcd_hres) {
-			dev_warn(ctrl->dev, "The height is changed %d -> %d\n",
+			fimc_warn("The height is changed %d -> %d\n",
 				f->fmt.win.w.height, ctrl->fb.lcd_hres);
-			f->fmt.win.w.height = ctrl->fb.lcd_hres;
+				f->fmt.win.w.height = ctrl->fb.lcd_hres;
 		}
 	} else {			/* Portrait mode */
 		if (f->fmt.win.w.width > ctrl->fb.lcd_hres) {
-			dev_warn(ctrl->dev, "The width is changed %d -> %d\n",
+			fimc_warn("The width is changed %d -> %d\n",
 				f->fmt.win.w.width, ctrl->fb.lcd_hres);
-			f->fmt.win.w.width = ctrl->fb.lcd_hres;
+				f->fmt.win.w.width = ctrl->fb.lcd_hres;
 		}
 
 		if (f->fmt.win.w.height > ctrl->fb.lcd_vres) {
-			dev_warn(ctrl->dev, "The height is changed %d -> %d\n",
+			fimc_warn("The height is changed %d -> %d\n",
 				f->fmt.win.w.height, ctrl->fb.lcd_vres);
-			f->fmt.win.w.height = ctrl->fb.lcd_vres;
+				f->fmt.win.w.height = ctrl->fb.lcd_vres;
 		}
-
 	}
 
 	return 0;
 }
 
-int fimc_g_fmt_vid_overlay(struct file *file, void *fh, struct v4l2_format *f)
+int fimc_g_fmt_vid_overlay(struct file *filp, void *fh, struct v4l2_format *f)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	int ctx_id = ((struct fimc_prv_data *)fh)->ctx_id;
+	struct fimc_ctx *ctx;
 
-	dev_info(ctrl->dev, "%s: called\n", __func__);
+	ctx = &ctrl->out->ctx[ctx_id];
 
-	f->fmt.win = ctrl->out->win;
+	fimc_info1("%s: called\n", __func__);
+
+	f->fmt.win = ctx->win;
 
 	return 0;
 }
 
-int fimc_s_fmt_vid_overlay(struct file *file, void *fh, struct v4l2_format *f)
+static int fimc_check_pos(struct fimc_control *ctrl,
+			  struct fimc_ctx *ctx,
+			  struct v4l2_format *f)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	if (ctx->win.w.width != f->fmt.win.w.width) {
+		fimc_err("%s: cannot change width\n", __func__);
+		return -EINVAL;
+	} else if (ctx->win.w.height != f->fmt.win.w.height) {
+		fimc_err("%s: cannot change height\n", __func__);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int fimc_change_fifo_position(struct fimc_control *ctrl,
+				     struct fimc_ctx *ctx) {
+	struct v4l2_rect fimd_rect;
+	struct s3cfb_user_window window;
 	int ret = -1;
 
-	dev_info(ctrl->dev, "%s: called\n", __func__);
+	memset(&fimd_rect, 0, sizeof(struct v4l2_rect));
 
-	/* Check stream status */
-	if (ctrl->status != FIMC_STREAMOFF) {
-		dev_err(ctrl->dev, "FIMC is running\n");
-		return -EBUSY;
+	ret = fimc_fimd_rect(ctrl, ctx, &fimd_rect);
+	if (ret < 0) {
+		fimc_err("fimc_fimd_rect fail\n");
+		return -EINVAL;
 	}
 
-	ret = fimc_try_fmt_overlay(file, fh, f);
-	if (ret < 0)
-		return ret;
+	/* Update WIN position */
+	window.x = fimd_rect.left;
+	window.y = fimd_rect.top;
+	ret = s3cfb_direct_ioctl(ctrl->id, S3CFB_WIN_POSITION,
+			(unsigned long)&window);
+	if (ret < 0) {
+		fimc_err("direct_ioctl(S3CFB_WIN_POSITION) fail\n");
+		return -EINVAL;
+	}
 
-	ctrl->out->win = f->fmt.win;
+	return 0;
+}
+
+int fimc_s_fmt_vid_overlay(struct file *filp, void *fh, struct v4l2_format *f)
+{
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	int ctx_id = ((struct fimc_prv_data *)fh)->ctx_id;
+	struct fimc_ctx *ctx;
+	int ret = -1;
+	ctx = &ctrl->out->ctx[ctx_id];
+
+	fimc_info1("%s: called\n", __func__);
+
+	switch (ctx->status) {
+	case FIMC_STREAMON:
+		ret = fimc_check_pos(ctrl, ctx, f);
+		if (ret < 0) {
+			fimc_err("When FIMC is running, "
+				"you can only move the position.\n");
+			return -EBUSY;
+		}
+
+		ret = fimc_try_fmt_overlay(filp, fh, f);
+		if (ret < 0)
+			return ret;
+
+		ctx->win = f->fmt.win;
+		fimc_change_fifo_position(ctrl, ctx);
+
+		break;
+	case FIMC_STREAMOFF:
+		ret = fimc_try_fmt_overlay(filp, fh, f);
+		if (ret < 0)
+			return ret;
+		ctx->win = f->fmt.win;
+
+		break;
+
+	default:
+		fimc_err("FIMC is running\n");
+		return -EBUSY;
+	}
 
 	return ret;
 }
 
 int fimc_g_fbuf(struct file *filp, void *fh, struct v4l2_framebuffer *fb)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
-	u32 bpp = 1;
-	u32 format = ctrl->out->fbuf.fmt.pixelformat;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	int ctx_id = ((struct fimc_prv_data *)fh)->ctx_id;
+	struct fimc_ctx *ctx;
+	u32 bpp = 1, format;
 
-	dev_info(ctrl->dev, "%s: called\n", __func__);
+	ctx = &ctrl->out->ctx[ctx_id];
 
-	fb->capability = ctrl->out->fbuf.capability;
+	fimc_info1("%s: called\n", __func__);
+
+	fb->capability = ctx->fbuf.capability;
 	fb->flags = 0;
-	fb->base = ctrl->out->fbuf.base;
+	fb->base = ctx->fbuf.base;
 
-	fb->fmt.width = ctrl->out->fbuf.fmt.width;
-	fb->fmt.height = ctrl->out->fbuf.fmt.height;
-	fb->fmt.pixelformat = ctrl->out->fbuf.fmt.pixelformat;
+	fb->fmt.width = ctx->fbuf.fmt.width;
+	fb->fmt.height = ctx->fbuf.fmt.height;
+	fb->fmt.pixelformat = ctx->fbuf.fmt.pixelformat;
+	format = ctx->fbuf.fmt.pixelformat;
 
-	if (format == V4L2_PIX_FMT_NV12)
+	switch (format) {
+	case V4L2_PIX_FMT_YUV420: /* fall through */
+	case V4L2_PIX_FMT_NV12:
 		bpp = 1;
-	else if (format == V4L2_PIX_FMT_RGB32)
-		bpp = 4;
-	else if (format == V4L2_PIX_FMT_RGB565)
+		break;
+	case V4L2_PIX_FMT_RGB565:
 		bpp = 2;
+		break;
+	case V4L2_PIX_FMT_RGB32:
+		bpp = 4;
+		break;
+	}
 
-	ctrl->out->fbuf.fmt.bytesperline = fb->fmt.width * bpp;
-	fb->fmt.bytesperline = ctrl->out->fbuf.fmt.bytesperline;
-	fb->fmt.sizeimage = ctrl->out->fbuf.fmt.sizeimage;
+	ctx->fbuf.fmt.bytesperline = fb->fmt.width * bpp;
+	fb->fmt.bytesperline = ctx->fbuf.fmt.bytesperline;
+	fb->fmt.sizeimage = ctx->fbuf.fmt.sizeimage;
 	fb->fmt.colorspace = V4L2_COLORSPACE_SMPTE170M;
 	fb->fmt.priv = 0;
 
@@ -139,34 +212,69 @@ int fimc_g_fbuf(struct file *filp, void *fh, struct v4l2_framebuffer *fb)
 
 int fimc_s_fbuf(struct file *filp, void *fh, struct v4l2_framebuffer *fb)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	int ctx_id = ((struct fimc_prv_data *)fh)->ctx_id;
+	struct fimc_ctx *ctx;
 	u32 bpp = 1;
 	u32 format = fb->fmt.pixelformat;
+	ctx = &ctrl->out->ctx[ctx_id];
 
-	dev_info(ctrl->dev, "%s: called\n", __func__);
+	fimc_info1("%s: called. width(%d), height(%d)\n",
+			__func__, fb->fmt.width, fb->fmt.height);
 
-	ctrl->out->fbuf.capability = V4L2_FBUF_CAP_EXTERNOVERLAY;
-	ctrl->out->fbuf.flags = 0;
-	ctrl->out->fbuf.base = fb->base;
+	ctx->fbuf.capability = V4L2_FBUF_CAP_EXTERNOVERLAY;
+	ctx->fbuf.flags = 0;
+	ctx->fbuf.base = fb->base;
 
-	if (fb->base) {
-		ctrl->out->fbuf.fmt.width = fb->fmt.width;
-		ctrl->out->fbuf.fmt.height = fb->fmt.height;
-		ctrl->out->fbuf.fmt.pixelformat	= fb->fmt.pixelformat;
+	if (ctx->overlay.mode == FIMC_OVLY_NONE_MULTI_BUF) {
+		ctx->fbuf.fmt.width = fb->fmt.width;
+		ctx->fbuf.fmt.height = fb->fmt.height;
+		ctx->fbuf.fmt.pixelformat = fb->fmt.pixelformat;
 
-		if (format == V4L2_PIX_FMT_NV12)
+		switch (format) {
+		case V4L2_PIX_FMT_YUV420: /* fall through */
+		case V4L2_PIX_FMT_NV12:
 			bpp = 1;
-		else if (format == V4L2_PIX_FMT_RGB32)
-			bpp = 4;
-		else if (format == V4L2_PIX_FMT_RGB565)
+			break;
+		case V4L2_PIX_FMT_RGB565:
 			bpp = 2;
+			break;
+		case V4L2_PIX_FMT_RGB32:
+			bpp = 4;
+			break;
+		}
 
-		ctrl->out->fbuf.fmt.bytesperline = fb->fmt.width * bpp;
-		ctrl->out->fbuf.fmt.sizeimage = fb->fmt.sizeimage;
-		ctrl->out->fbuf.fmt.colorspace = V4L2_COLORSPACE_SMPTE170M;
-		ctrl->out->fbuf.fmt.priv = 0;
+		ctx->fbuf.fmt.bytesperline = fb->fmt.width * bpp;
+		ctx->fbuf.fmt.sizeimage = fb->fmt.sizeimage;
+		ctx->fbuf.fmt.colorspace = V4L2_COLORSPACE_SMPTE170M;
+		ctx->fbuf.fmt.priv = 0;
+	} else if (fb->base) {
+		ctx->fbuf.fmt.width = fb->fmt.width;
+		ctx->fbuf.fmt.height = fb->fmt.height;
+		ctx->fbuf.fmt.pixelformat = fb->fmt.pixelformat;
+
+		switch (format) {
+		case V4L2_PIX_FMT_YUV420:	/* fall through */
+		case V4L2_PIX_FMT_NV12:
+			bpp = 1;
+			break;
+		case V4L2_PIX_FMT_RGB565:
+			bpp = 2;
+			break;
+		case V4L2_PIX_FMT_RGB32:
+			bpp = 4;
+			break;
+		}
+
+		ctx->fbuf.fmt.bytesperline = fb->fmt.width * bpp;
+		ctx->fbuf.fmt.sizeimage = fb->fmt.sizeimage;
+		ctx->fbuf.fmt.colorspace = V4L2_COLORSPACE_SMPTE170M;
+		ctx->fbuf.fmt.priv = 0;
+
+		ctx->overlay.mode = FIMC_OVLY_NONE_SINGLE_BUF;
+	} else {
+		ctx->overlay.mode = FIMC_OVLY_NOT_FIXED;
 	}
 
 	return 0;
 }
-

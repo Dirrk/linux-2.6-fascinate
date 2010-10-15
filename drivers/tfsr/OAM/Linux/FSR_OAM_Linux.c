@@ -10,7 +10,7 @@
  */
 
 /**
- * @version     LinuStoreIII_1.2.0_b032-FSR_1.2.1p1_b129_RTM
+ * @version     RFS_3.0.0_b035_LinuStoreIII_1.2.0_b035_FSR_1.2.1p1_b129_RC
  * @file        drivers/tfsr/OAM/FSR_OAM_Linux.c
  * @brief       This file contain the OS Adaptation Modules for Linux
  *

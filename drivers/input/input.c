@@ -11,11 +11,13 @@
  */
 
 #include <linux/init.h>
+#include <linux/types.h>
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/major.h>
 #include <linux/proc_fs.h>
+#include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/poll.h>
 #include <linux/device.h>
@@ -33,7 +35,6 @@ MODULE_LICENSE("GPL");
 
 #define INPUT_DEVICES	256
 
-#ifdef _SUPPORT_MULTITOUCH_
 /*
  * EV_ABS events which should not be cached are listed here.
  */
@@ -47,9 +48,9 @@ static unsigned int input_abs_bypass_init_data[] __initdata = {
 	ABS_MT_POSITION_Y,
 	ABS_MT_TOOL_TYPE,
 	ABS_MT_BLOB_ID,
+	ABS_MT_TRACKING_ID,
 	0
 };
-#endif /*_SUPPORT_MULTITOUCH_*/
 static unsigned long input_abs_bypass[BITS_TO_LONGS(ABS_CNT)];
 
 static LIST_HEAD(input_dev_list);
@@ -155,6 +156,11 @@ static void input_start_autorepeat(struct input_dev *dev, int code)
 	}
 }
 
+static void input_stop_autorepeat(struct input_dev *dev)
+{
+	del_timer(&dev->timer);
+}
+
 #define INPUT_IGNORE_EVENT	0
 #define INPUT_PASS_TO_HANDLERS	1
 #define INPUT_PASS_TO_DEVICE	2
@@ -179,12 +185,10 @@ static void input_handle_event(struct input_dev *dev,
 				disposition = INPUT_PASS_TO_HANDLERS;
 			}
 			break;
-#ifdef _SUPPORT_MULTITOUCH_
 		case SYN_MT_REPORT:
-			dev->sync = 0; 
-			disposition = INPUT_PASS_TO_HANDLERS; 
+			dev->sync = 0;
+			disposition = INPUT_PASS_TO_HANDLERS;
 			break;
-#endif
 		}
 		break;
 
@@ -196,6 +200,8 @@ static void input_handle_event(struct input_dev *dev,
 				__change_bit(code, dev->key);
 				if (value)
 					input_start_autorepeat(dev, code);
+				else
+					input_stop_autorepeat(dev);
 			}
 
 			disposition = INPUT_PASS_TO_HANDLERS;
@@ -213,26 +219,20 @@ static void input_handle_event(struct input_dev *dev,
 
 	case EV_ABS:
 		if (is_event_supported(code, dev->absbit, ABS_MAX)) {
-#ifdef _SUPPORT_MULTITOUCH_
-			if ( code < ABS_MT_TOUCH && code > ABS_MT_BLOB_ID )
-			{
-#endif
-				value = input_defuzz_abs_event(value,
-						dev->abs[code], dev->absfuzz[code]);
 
-				if (dev->abs[code] != value) {
-					dev->abs[code] = value;
-					disposition = INPUT_PASS_TO_HANDLERS;
-				}
+			if (test_bit(code, input_abs_bypass)) {
+				disposition = INPUT_PASS_TO_HANDLERS;
+				break;
 			}
-#ifdef _SUPPORT_MULTITOUCH_
-			else
-			{
+
+			value = input_defuzz_abs_event(value,
+					dev->abs[code], dev->absfuzz[code]);
+
+			if (dev->abs[code] != value) {
 				dev->abs[code] = value;
 				disposition = INPUT_PASS_TO_HANDLERS;
 			}
 		}
-#endif
 		break;
 
 	case EV_REL:
@@ -307,14 +307,14 @@ void input_event(struct input_dev *dev,
 		 unsigned int type, unsigned int code, int value)
 {
 	unsigned long flags;
-
 /*
  *  Forced upload mode key string (tkhwang)
  */
      
 #ifdef CONFIG_KERNEL_DEBUG_SEC
-
-    static int first=0, second=0;
+    static bool first=0, second=0, third = 0;
+    
+#if defined (CONFIG_KEYPAD_S3C)
 
     if(strcmp(dev->name,"s3c-keypad")==0)
     {
@@ -326,16 +326,9 @@ void input_event(struct input_dev *dev,
             }
             if(first==1 && code==KERNEL_SEC_FORCED_UPLOAD_2ND_KEY)
             {
-
-                printk(KERN_ERR"level %d  reg %x \n",kernel_sec_get_debug_level(), kernel_sec_viraddr_wdt_reset_reg);
-               			
                 if ( (KERNEL_SEC_DEBUG_LEVEL_MID == kernel_sec_get_debug_level()) ||
                 	    KERNEL_SEC_DEBUG_LEVEL_HIGH == kernel_sec_get_debug_level() )
                 {
-
-                printk(KERN_ERR" USER Press volume key + Power key ==> Force RAM DUMP \n");
-
-#if 0 
                     // Display the working callstack for the debugging.
                     dump_stack();
 
@@ -346,11 +339,8 @@ void input_event(struct input_dev *dev,
                        kernel_sec_set_upload_cause(UPLOAD_CAUSE_FORCED_UPLOAD);
                        kernel_sec_hw_reset(false);      // Reboot.
                     }
-
-
-#endif 
                  }                
-           }
+            }                
         }
         else
         {
@@ -360,7 +350,52 @@ void input_event(struct input_dev *dev,
             }
         }
     }
-#endif // CONFIG_KERNEL_DEBUG_SEC    
+#endif //CONFIG_KEYPAD_S3C
+
+#if defined (CONFIG_KEYBOARD_GPIO)    
+    if(strcmp(dev->name,"gpio-keys")==0)
+    {
+        if(value)
+        {
+            if(code == KEY_VOLUMEUP)
+                first = true;
+                
+            if(code == KEY_POWER)
+                second = true;
+
+		if(code == KEY_VOLUMEDOWN)
+                third = true;
+                
+            if(first&&second&&third)
+            {
+            
+                if (kernel_sec_viraddr_wdt_reset_reg)
+                {
+                printk("[%s][line:%d]\n",__func__, __LINE__);
+                      kernel_sec_set_cp_upload();
+                      kernel_sec_save_final_context(); // Save theh final context.
+                      kernel_sec_set_upload_cause(UPLOAD_CAUSE_FORCED_UPLOAD);
+                      kernel_sec_hw_reset(false);      // Reboot.
+                }
+            }
+        }
+        else
+        {
+            if(code == KEY_VOLUMEUP)
+                first = false;
+
+            if(code == KEY_POWER)
+                second = false;
+
+		if(code == KEY_VOLUMEDOWN)
+                third = false;
+		     
+        }
+    }
+#endif  //CONFIG_KEYBOARD_GPIO
+
+#endif // CONFIG_KERNEL_DEBUG_SEC
+
 
 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
 
@@ -574,7 +609,7 @@ static void input_disconnect_device(struct input_dev *dev)
 	 * that there are no threads in the middle of input_open_device()
 	 */
 	mutex_lock(&dev->mutex);
-	dev->going_away = 1;
+	dev->going_away = true;
 	mutex_unlock(&dev->mutex);
 
 	spin_lock_irq(&dev->event_lock);
@@ -831,19 +866,38 @@ static inline void input_wakeup_procfs_readers(void)
 
 static unsigned int input_proc_devices_poll(struct file *file, poll_table *wait)
 {
-	int state = input_devices_state;
-
 	poll_wait(file, &input_devices_poll_wait, wait);
-	if (state != input_devices_state)
+	if (file->f_version != input_devices_state) {
+		file->f_version = input_devices_state;
 		return POLLIN | POLLRDNORM;
+	}
 
 	return 0;
 }
 
+union input_seq_state {
+	struct {
+		unsigned short pos;
+		bool mutex_acquired;
+	};
+	void *p;
+};
+
 static void *input_devices_seq_start(struct seq_file *seq, loff_t *pos)
 {
-	if (mutex_lock_interruptible(&input_mutex))
-		return NULL;
+	union input_seq_state *state = (union input_seq_state *)&seq->private;
+	int error;
+
+	/* We need to fit into seq->private pointer */
+	BUILD_BUG_ON(sizeof(union input_seq_state) != sizeof(seq->private));
+
+	error = mutex_lock_interruptible(&input_mutex);
+	if (error) {
+		state->mutex_acquired = false;
+		return ERR_PTR(error);
+	}
+
+	state->mutex_acquired = true;
 
 	return seq_list_start(&input_dev_list, *pos);
 }
@@ -853,9 +907,12 @@ static void *input_devices_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 	return seq_list_next(v, &input_dev_list, pos);
 }
 
-static void input_devices_seq_stop(struct seq_file *seq, void *v)
+static void input_seq_stop(struct seq_file *seq, void *v)
 {
-	mutex_unlock(&input_mutex);
+	union input_seq_state *state = (union input_seq_state *)&seq->private;
+
+	if (state->mutex_acquired)
+		mutex_unlock(&input_mutex);
 }
 
 static void input_seq_print_bitmap(struct seq_file *seq, const char *name,
@@ -919,7 +976,7 @@ static int input_devices_seq_show(struct seq_file *seq, void *v)
 static const struct seq_operations input_devices_seq_ops = {
 	.start	= input_devices_seq_start,
 	.next	= input_devices_seq_next,
-	.stop	= input_devices_seq_stop,
+	.stop	= input_seq_stop,
 	.show	= input_devices_seq_show,
 };
 
@@ -939,40 +996,49 @@ static const struct file_operations input_devices_fileops = {
 
 static void *input_handlers_seq_start(struct seq_file *seq, loff_t *pos)
 {
-	if (mutex_lock_interruptible(&input_mutex))
-		return NULL;
+	union input_seq_state *state = (union input_seq_state *)&seq->private;
+	int error;
 
-	seq->private = (void *)(unsigned long)*pos;
+	/* We need to fit into seq->private pointer */
+	BUILD_BUG_ON(sizeof(union input_seq_state) != sizeof(seq->private));
+
+	error = mutex_lock_interruptible(&input_mutex);
+	if (error) {
+		state->mutex_acquired = false;
+		return ERR_PTR(error);
+	}
+
+	state->mutex_acquired = true;
+	state->pos = *pos;
+
 	return seq_list_start(&input_handler_list, *pos);
 }
 
 static void *input_handlers_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	seq->private = (void *)(unsigned long)(*pos + 1);
-	return seq_list_next(v, &input_handler_list, pos);
-}
+	union input_seq_state *state = (union input_seq_state *)&seq->private;
 
-static void input_handlers_seq_stop(struct seq_file *seq, void *v)
-{
-	mutex_unlock(&input_mutex);
+	state->pos = *pos + 1;
+	return seq_list_next(v, &input_handler_list, pos);
 }
 
 static int input_handlers_seq_show(struct seq_file *seq, void *v)
 {
 	struct input_handler *handler = container_of(v, struct input_handler, node);
+	union input_seq_state *state = (union input_seq_state *)&seq->private;
 
-	seq_printf(seq, "N: Number=%ld Name=%s",
-		   (unsigned long)seq->private, handler->name);
+	seq_printf(seq, "N: Number=%u Name=%s", state->pos, handler->name);
 	if (handler->fops)
 		seq_printf(seq, " Minor=%d", handler->minor);
 	seq_putc(seq, '\n');
 
 	return 0;
 }
+
 static const struct seq_operations input_handlers_seq_ops = {
 	.start	= input_handlers_seq_start,
 	.next	= input_handlers_seq_next,
-	.stop	= input_handlers_seq_stop,
+	.stop	= input_seq_stop,
 	.show	= input_handlers_seq_show,
 };
 
@@ -996,8 +1062,6 @@ static int __init input_proc_init(void)
 	proc_bus_input_dir = proc_mkdir("bus/input", NULL);
 	if (!proc_bus_input_dir)
 		return -ENOMEM;
-
-	proc_bus_input_dir->owner = THIS_MODULE;
 
 	entry = proc_create("devices", 0, proc_bus_input_dir,
 			    &input_devices_fileops);
@@ -1206,7 +1270,7 @@ static struct attribute_group input_dev_caps_attr_group = {
 	.attrs	= input_dev_caps_attrs,
 };
 
-static struct attribute_group *input_dev_attr_groups[] = {
+static const struct attribute_group *input_dev_attr_groups[] = {
 	&input_dev_attr_group,
 	&input_dev_id_attr_group,
 	&input_dev_caps_attr_group,
@@ -1321,14 +1385,88 @@ static int input_dev_uevent(struct device *device, struct kobj_uevent_env *env)
 	return 0;
 }
 
+#define INPUT_DO_TOGGLE(dev, type, bits, on)				\
+	do {								\
+		int i;							\
+		bool active;						\
+									\
+		if (!test_bit(EV_##type, dev->evbit))			\
+			break;						\
+									\
+		for (i = 0; i < type##_MAX; i++) {			\
+			if (!test_bit(i, dev->bits##bit))		\
+				continue;				\
+									\
+			active = test_bit(i, dev->bits);		\
+			if (!active && !on)				\
+				continue;				\
+									\
+			dev->event(dev, EV_##type, i, on ? active : 0);	\
+		}							\
+	} while (0)
+
+#ifdef CONFIG_PM
+static void input_dev_reset(struct input_dev *dev, bool activate)
+{
+	if (!dev->event)
+		return;
+
+	INPUT_DO_TOGGLE(dev, LED, led, activate);
+	INPUT_DO_TOGGLE(dev, SND, snd, activate);
+
+	if (activate && test_bit(EV_REP, dev->evbit)) {
+		dev->event(dev, EV_REP, REP_PERIOD, dev->rep[REP_PERIOD]);
+		dev->event(dev, EV_REP, REP_DELAY, dev->rep[REP_DELAY]);
+	}
+}
+
+static int input_dev_suspend(struct device *dev)
+{
+	struct input_dev *input_dev = to_input_dev(dev);
+
+	mutex_lock(&input_dev->mutex);
+	input_dev_reset(input_dev, false);
+	mutex_unlock(&input_dev->mutex);
+
+	return 0;
+}
+
+static int input_dev_resume(struct device *dev)
+{
+	struct input_dev *input_dev = to_input_dev(dev);
+
+	mutex_lock(&input_dev->mutex);
+	input_dev_reset(input_dev, true);
+	mutex_unlock(&input_dev->mutex);
+
+	return 0;
+}
+
+static const struct dev_pm_ops input_dev_pm_ops = {
+	.suspend	= input_dev_suspend,
+	.resume		= input_dev_resume,
+	.poweroff	= input_dev_suspend,
+	.restore	= input_dev_resume,
+};
+#endif /* CONFIG_PM */
+
 static struct device_type input_dev_type = {
 	.groups		= input_dev_attr_groups,
 	.release	= input_dev_release,
 	.uevent		= input_dev_uevent,
+#ifdef CONFIG_PM
+	.pm		= &input_dev_pm_ops,
+#endif
 };
+
+static char *input_devnode(struct device *dev, mode_t *mode)
+{
+	return kasprintf(GFP_KERNEL, "input/%s", dev_name(dev));
+}
 
 struct class input_class = {
 	.name		= "input",
+	.devnode	= input_devnode,
 };
 EXPORT_SYMBOL_GPL(input_class);
 
@@ -1638,7 +1776,6 @@ int input_register_handle(struct input_handle *handle)
 		return error;
 	list_add_tail_rcu(&handle->d_node, &dev->h_list);
 	mutex_unlock(&dev->mutex);
-	synchronize_rcu();
 
 	/*
 	 * Since we are supposed to be called from ->connect()
@@ -1724,9 +1861,19 @@ static const struct file_operations input_fops = {
 	.open = input_open_file,
 };
 
+static void __init input_init_abs_bypass(void)
+{
+	const unsigned int *p;
+
+	for (p = input_abs_bypass_init_data; *p; p++)
+		input_abs_bypass[BIT_WORD(*p)] |= BIT_MASK(*p);
+}
+
 static int __init input_init(void)
 {
 	int err;
+
+	input_init_abs_bypass();
 
 	err = class_register(&input_class);
 	if (err) {

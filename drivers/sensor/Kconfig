@@ -3,7 +3,7 @@
 #
 
 
-menuconfig NEW_SENSORS
+menuconfig SENSOR
 	bool "Sensors Support"
 	help
 	  Say Y to enable Sensors support.  This allows control of supported
@@ -12,22 +12,13 @@ menuconfig NEW_SENSORS
 	  
 	  
 
-if NEW_SENSORS
-
-config ACCEL                                                              
-	bool "Accelerometer Sensor"
-	default y
-	help
-	This option enables accelerometer sensors  
+if SENSOR
 
 source "drivers/sensor/accel/Kconfig"
-
-source "drivers/sensor/accel_kr3dm/Kconfig"
 
 source "drivers/sensor/compass/Kconfig"
 
 source "drivers/sensor/optical/Kconfig"
 
 
-
-endif # NEW_SENSORS
+endif # SENSOR

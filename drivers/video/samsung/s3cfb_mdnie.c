@@ -55,7 +55,6 @@ static char banner[] __initdata = KERN_INFO "S3C MDNIE Driver, (c) 2010 Samsung 
 struct clk		*mdnie_clock;
 
 //#define MDNIE_TUNING
-#define MDNIE_TUNINGMODE_FOR_BACKLIGHT
 
 /*********** for debug **********************************************************/
 #if 0 
@@ -255,7 +254,7 @@ u8 current_mDNIe_OutDoor_OnOff = FALSE;
 
 int mDNIe_Tuning_Mode = FALSE;
 
-#ifdef MDNIE_TUNINGMODE_FOR_BACKLIGHT
+#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
 #if 0
 u16 mDNIe_data_ui[50] = {0};
 u16 mDNIe_data_300cd_level1[50] = {0};
@@ -484,7 +483,7 @@ int s3c_mdnie_hw_init(void)
 
 	/* clock */
 
-	mdnie_clock = clk_get(NULL,"mdnie_sel"); //to change sclk
+	mdnie_clock = clk_get(NULL,"sclk_mdnie"); //to change sclk
 	if (IS_ERR(mdnie_clock)) {
 		printk("failed to get mdnie clock source\n");
 		return -EINVAL;
@@ -660,7 +659,9 @@ void mDNIe_Set_Mode(Lcd_mDNIe_UI mode, u8 mDNIe_Outdoor_OnOff)
 
 
 	pre_0x0100 = 0;
+#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
 	pre_val = -1;
+#endif	/* CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT */
 
 	gprintk("[mDNIe] mDNIe_Set_Mode: current_mDNIe_UI(%d), current_mDNIe_OutDoor_OnOff(%d)  \n",current_mDNIe_UI, current_mDNIe_OutDoor_OnOff);	
 }
@@ -1098,7 +1099,7 @@ void mDNIe_txtbuf_to_parsing(void)
 EXPORT_SYMBOL(mDNIe_txtbuf_to_parsing);
 #endif
 
-#ifdef MDNIE_TUNINGMODE_FOR_BACKLIGHT
+#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
 int mdnie_tuning_backlight = 0;
 
 extern int IsLDIEnabled(void);

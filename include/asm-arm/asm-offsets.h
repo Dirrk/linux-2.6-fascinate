@@ -7,7 +7,7 @@
  *
  */
 
-#define TSK_ACTIVE_MM 204 /* offsetof(struct task_struct, active_mm)	@ */
+#define TSK_ACTIVE_MM 260 /* offsetof(struct task_struct, active_mm)	@ */
 
 #define TI_FLAGS 0 /* offsetof(struct thread_info, flags)	@ */
 #define TI_PREEMPT 4 /* offsetof(struct thread_info, preempt_count)	@ */
@@ -42,7 +42,7 @@
 #define S_OLD_R0 68 /* offsetof(struct pt_regs, ARM_ORIG_r0)	@ */
 #define S_FRAME_SIZE 72 /* sizeof(struct pt_regs)	@ */
 
-#define MM_CONTEXT_ID 360 /* offsetof(struct mm_struct, context.id)	@ */
+#define MM_CONTEXT_ID 364 /* offsetof(struct mm_struct, context.id)	@ */
 
 #define VMA_VM_MM 0 /* offsetof(struct vm_area_struct, vm_mm)	@ */
 #define VMA_VM_FLAGS 20 /* offsetof(struct vm_area_struct, vm_flags)	@ */

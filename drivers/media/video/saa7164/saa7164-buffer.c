@@ -19,8 +19,6 @@
  *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/slab.h>
-
 #include "saa7164.h"
 
 /* The PCI address space for buffer handling looks like this:
@@ -136,11 +134,10 @@ ret:
 int saa7164_buffer_dealloc(struct saa7164_tsport *port,
 	struct saa7164_buffer *buf)
 {
-	struct saa7164_dev *dev;
+	struct saa7164_dev *dev = port->dev;
 
-	if (!buf || !port)
+	if ((buf == 0) || (port == 0))
 		return SAA_ERR_BAD_PARAMETER;
-	dev = port->dev;
 
 	dprintk(DBGLVL_BUF, "%s() deallocating buffer @ 0x%p\n", __func__, buf);
 

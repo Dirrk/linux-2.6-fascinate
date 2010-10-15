@@ -1,4 +1,4 @@
-cmd_usr/gen_init_cpio := gcc -Wp,-MD,usr/.gen_init_cpio.d -g -O2     -o usr/gen_init_cpio usr/gen_init_cpio.c  
+cmd_usr/gen_init_cpio := gcc -Wp,-MD,usr/.gen_init_cpio.d -g -O4     -o usr/gen_init_cpio usr/gen_init_cpio.c  
 
 deps_usr/gen_init_cpio := \
   usr/gen_init_cpio.c \

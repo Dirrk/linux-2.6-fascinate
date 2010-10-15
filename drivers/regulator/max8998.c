@@ -91,7 +91,8 @@ static u8 max8698_cache_regs[16] = {
 	0x0E, 0x33, 0x0E, 0x16,
 };
 #else
-u8 max8998_cache_regs[] = {
+// stk.lim: 0x40 is maximum address of MAX8998 registers. Can't find any proper macro.
+u8 max8998_cache_regs[0x40] = {
 	0xFF, 0xFF, 0xFF, 0xFF,
 	0xFF, 0xFF, 0xFF, 0xFF,
 	0xFF, 0xFF, 0xFF, 0xFF,
@@ -101,14 +102,14 @@ u8 max8998_cache_regs[] = {
         0x12, 0x12, 0x02, 0x04, //0x19
         0x88, 0x02, 0x02, 0x02, //0x1D
 	0x02, 0x30, 0xAC, 0x0A, //0x21
-	0x14, 0x06, 0x10, 0x11,	//0x25
-	0x11,			//0x29
+	0x14, 0x06, 0x10, 0x11,//0x25
+	0x11, 0x01, 0x17, 0x14,//0x29
 };
 #endif
 
 struct max8998_data *client_data_p = NULL;
 
-void lpm_mode_check(void);
+//void lpm_mode_check(void); /* TODO */
 
 static int max8998_i2c_cache_read(struct i2c_client *client, u8 reg, u8 *dest)
 {
@@ -730,6 +731,90 @@ int max8998_ldo_set_voltage_direct(int ldo,
 }
 EXPORT_SYMBOL_GPL(max8998_ldo_set_voltage_direct);
 
+
+int max8998_ldo_get_voltage_direct(int ldo)
+{
+	struct max8998_data *max8998 = client_data_p;
+	int value, shift = 0, mask = 0xff, reg;
+
+	if((ldo < MAX8998_LDO1) || (ldo > MAX8998_DCDC4))
+	{
+		printk("ERROR: Invalid argument passed\n");
+		return -EINVAL;
+	}
+
+	DBG("func =%s called for regulator = %d \n",__func__,ldo);
+
+	if (ldo == MAX8998_LDO3) {
+		reg  = MAX8998_REG_LDO23;
+		mask = 0x0F;
+	} else if (ldo == MAX8998_LDO2) {
+		reg  = MAX8998_REG_LDO23;
+		shift = 4;
+		mask = 0x0F;
+	} else if (ldo == MAX8998_LDO8) {
+		reg  = MAX8998_REG_LDO89;
+		shift = 4;
+		mask = 0x07;
+	} else if (ldo == MAX8998_LDO9) {
+		reg  = MAX8998_REG_LDO89;
+		shift = 2;
+		mask = 0x03;
+	} else if (ldo == MAX8998_LDO10) {
+		reg  = MAX8998_REG_LDO1011;
+		shift = 5;
+		mask = 0x07;
+	} else if (ldo == MAX8998_LDO11) {
+		reg  = MAX8998_REG_LDO1011;
+		mask = 0x1F;
+	} else if (ldo == MAX8998_LDO12) {
+		reg  = MAX8998_REG_LDO12;
+		mask = 0xFF;
+	} else if (ldo == MAX8998_LDO13) {
+		reg  = MAX8998_REG_LDO13;
+		mask = 0xFF;
+	} else if (ldo == MAX8998_LDO14) {
+		reg  = MAX8998_REG_LDO14;
+		mask = 0xFF;
+	} else if (ldo == MAX8998_LDO15) {
+		reg  = MAX8998_REG_LDO15;
+		mask = 0xFF;
+	} else if (ldo == MAX8998_LDO16) {
+		reg  = MAX8998_REG_LDO16;
+		mask = 0xFF;
+	} else if (ldo == MAX8998_LDO17) {
+		reg  = MAX8998_REG_LDO17;
+		mask = 0xFF;
+	} else if (ldo == MAX8998_DCDC1) {
+		//reg = 0x04;
+		reg = MAX8998_REG_DVSARM1;
+		mask = 0x1f;
+	} else if (ldo == MAX8998_DCDC2) {
+		//reg = 0x06;
+		reg = MAX8998_REG_DVSINT1;
+		mask = 0x1f;
+	} else if (ldo == MAX8998_DCDC3) {
+		reg = MAX8998_REG_BUCK3;
+		mask = 0xff;
+	} else if (ldo == MAX8998_DCDC4) {
+		reg = MAX8998_REG_BUCK4;
+		mask = 0xff;
+	} else {// for ldo4,5,6,7
+		reg = MAX8998_REG_LDO23 + (ldo - MAX8998_LDO3);
+		mask = 0xff;
+	}
+
+
+	value = max8998_read_reg(max8998, reg);
+	//printk("\n reg=%x val=%x mask=%x shift=%x\n",reg, value, mask, shift);
+
+	value = (value >> shift) & mask;
+
+	return value;
+}
+EXPORT_SYMBOL_GPL(max8998_ldo_get_voltage_direct);
+
+
 int max8998_ldo_is_enabled_direct(int ldo)
 {
 	struct max8998_data *max8998 = client_data_p;
@@ -824,6 +909,21 @@ int max8998_set_dvsint_direct(u32 armSet, u32 voltage)
 }
 EXPORT_SYMBOL_GPL(max8998_set_dvsint_direct);
 
+
+int max8998_print_all_ldo (void)
+{
+	int i,ret;
+
+	printk("\n");	
+	for (i=MAX8998_LDO2; i<=MAX8998_DCDC4; i++) {
+		ret = max8998_ldo_is_enabled_direct(i);
+		if(ret)
+			printk("LDO no=%d ENABLE voltage=%x\n",i,max8998_ldo_get_voltage_direct(i));
+		else
+			printk("LDO no=%d DISABLE \n",i);
+	}
+	return 0;
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -1043,7 +1143,7 @@ static int __devinit max8998_pmic_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, max8998);
 	client_data_p = max8998; // store 8998 client data to be used later
 
-	lpm_mode_check();
+	//lpm_mode_check(); /* TODO */
 	
 	return 0;
 }

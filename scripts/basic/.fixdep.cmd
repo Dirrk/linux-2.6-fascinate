@@ -1,4 +1,4 @@
-cmd_scripts/basic/fixdep := gcc -Wp,-MD,scripts/basic/.fixdep.d -g -O2     -o scripts/basic/fixdep scripts/basic/fixdep.c  
+cmd_scripts/basic/fixdep := gcc -Wp,-MD,scripts/basic/.fixdep.d -g -O4     -o scripts/basic/fixdep scripts/basic/fixdep.c  
 
 deps_scripts/basic/fixdep := \
   scripts/basic/fixdep.c \

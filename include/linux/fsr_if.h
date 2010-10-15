@@ -9,7 +9,7 @@
  *---------------------------------------------------------------------------*
 */
 /**
- *  @version 	LinuStoreIII_1.2.0_b032-FSR_1.2.1p1_b129_RTM
+ *  @version 	RFS_3.0.0_b035_LinuStoreIII_1.2.0_b035_FSR_1.2.1p1_b129_RC
  *  @file	include/linux/fsr_if.h
  *  @brief	FSR interface to export commands and macros to utils, fat
  *
@@ -19,7 +19,7 @@
 #ifndef _FSR_IF_H_
 #define _FSR_IF_H_
 
-#define LINUSTOREIII_VERSION_STRING      "LinuStoreIII_1.2.0_b032"
+#define LINUSTOREIII_VERSION_STRING      "LinuStoreIII_1.2.0_b035"
 
 #ifndef __KERNEL__
 /*Warning*/

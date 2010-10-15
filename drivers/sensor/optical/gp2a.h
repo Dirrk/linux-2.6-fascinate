@@ -40,7 +40,7 @@
 
 #define INT_CLEAR    1 /* 0 = by polling operation, 1 = by interrupt operation */
 #define LIGHT_PERIOD 1 /* per sec */
-#define ADC_CHANNEL  9 /* index for s5pC110 9¹ø channel adc */ 
+#define ADC_CHANNEL  9 /* index for s5pC110 9ë²ˆ channel adc */ 
 
 /*for light sensor */
 #define STATE_NUM			3   /* number of states */
@@ -137,13 +137,11 @@ int opt_i2c_write( u8 reg, u8 *val );
 extern int s3c_adc_get_adc_data(int channel);
 void lightsensor_adjust_brightness(int level);
 extern int lightsensor_backlight_level_ctrl(int value);
-static int opt_attach_adapter(struct i2c_adapter *adap);
 static int proximity_open(struct inode *ip, struct file *fp);
 static int proximity_release(struct inode *ip, struct file *fp);
 static int light_open(struct inode *ip, struct file *fp);
 static int light_release(struct inode *ip, struct file *fp);
 
-static long proximity_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
 int lightsensor_get_adcvalue(void);
 
 

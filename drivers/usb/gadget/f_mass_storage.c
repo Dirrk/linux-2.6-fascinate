@@ -67,7 +67,7 @@
 #include <linux/freezer.h>
 #include <linux/utsname.h>
 #include <linux/wakelock.h>
-
+#include <linux/usb.h>
 #include <linux/usb_usual.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/composite.h>
@@ -79,19 +79,19 @@
 #include "f_mass_storage.h"
 #include "gadget_chips.h"
 #include "fsa9480_i2c.h"
-#include "f_tool_launcher.h"
+
 
 #define BULK_BUFFER_SIZE           4096
 
-#define FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-/*-------------------------------------------------------------------------*/
-
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
 /* SCSI device types */
 #define TYPE_DISK	0x00
 #define TYPE_CDROM	0x05
-#endif
-#define F_MASS_STORAGE_NUMBER_OF_DISKS 1
+
+
+/* TODO: flush after every 4 meg of writes to avoid excessive block level caching */
+#define MAX_UNFLUSHED_BYTES (4 * 1024 * 1024)
+#undef MAX_UNFLUSHED_BYTES 
+/*-------------------------------------------------------------------------*/
 
 #define DRIVER_NAME		"usb_mass_storage"
 #define MAX_LUNS		8
@@ -160,13 +160,7 @@ struct platform_device* fsg_platform_device = NULL; //denis
 
 extern int UmsCDEnable;
 static int UmsInitStatus=0;
-#ifdef FEATURE_TOOL_LAUNCHER
-extern int is_tool_launcher_enabled(void);
-extern void set_tool_launcher_setting(int setting_value);
-extern int get_tool_launcher_setting(void);
-extern int get_user_usb_mode_setting(void);
-extern int usb_switch_usb_mode_tool_launcher(int mode);
-#endif
+
 static struct {
 	char		*file[MAX_LUNS];
 	int		ro[MAX_LUNS];
@@ -257,6 +251,8 @@ struct bulk_cs_wrap {
 #define SC_READ_12			0xa8
 #define SC_READ_CAPACITY		0x25
 #define SC_READ_FORMAT_CAPACITIES	0x23
+#define SC_READ_HEADER			0x44
+#define SC_READ_TOC			0x43
 #define SC_RELEASE			0x17
 #define SC_REQUEST_SENSE		0x03
 #define SC_RESERVE			0x16
@@ -268,10 +264,6 @@ struct bulk_cs_wrap {
 #define SC_WRITE_6			0x0a
 #define SC_WRITE_10			0x2a
 #define SC_WRITE_12			0xaa
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-#define SC_READ_HEADER			0x44
-#define SC_READ_TOC			0x43
-#endif
 
 /* SCSI Sense Key/Additional Sense Code/ASC Qualifier values */
 #define SS_NO_SENSE				0
@@ -303,6 +295,7 @@ struct lun {
 	struct file	*filp;
 	loff_t		file_length;
 	loff_t		num_sectors;
+	unsigned int unflushed_bytes;
 
 	unsigned int	ro : 1;
 	unsigned int	prevent_medium_removal : 1;
@@ -312,10 +305,9 @@ struct lun {
 	u32		sense_data;
 	u32		sense_data_info;
 	u32		unit_attention_data;
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
+
     int     cdrom;
     int     id;
-#endif
 	struct device	dev;
 };
 
@@ -379,6 +371,10 @@ enum data_direction {
 
 struct fsg_dev {
 	struct usb_function function;
+	struct usb_composite_dev *cdev;
+
+	/* optional "usb_mass_storage" platform device */
+	struct platform_device *pdev;
 
 	/* lock protects: state and all the req_busy's */
 	spinlock_t		lock;
@@ -441,9 +437,8 @@ struct fsg_dev {
 	struct switch_dev sdev;
 
 	struct wake_lock wake_lock;
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-        int		cdrom;
-#endif
+
+    int		cdrom;
 };
 
 static inline struct fsg_dev *func_to_dev(struct usb_function *f)
@@ -473,6 +468,7 @@ static struct fsg_dev			*the_fsg;
 
 static void	close_backing_file(struct fsg_dev *fsg, struct lun *curlun);
 static void	close_all_backing_files(struct fsg_dev *fsg);
+static int fsync_sub(struct lun *curlun);
 
 int MSC_INVALID_CBW_IGNORE_CLEAR_HALT(void)
 {
@@ -1173,6 +1169,13 @@ static int do_write(struct fsg_dev *fsg)
 			amount_left_to_write -= nwritten;
 			fsg->residue -= nwritten;
 
+#ifdef MAX_UNFLUSHED_BYTES
+			curlun->unflushed_bytes += nwritten;
+			if (curlun->unflushed_bytes >= MAX_UNFLUSHED_BYTES) {
+				fsync_sub(curlun);
+				curlun->unflushed_bytes = 0;
+			}
+#endif
 			/* If an error occurred, report it and its position */
 			if (nwritten < amount) {
 				curlun->sense_data = SS_WRITE_ERROR;
@@ -1361,104 +1364,67 @@ static int do_verify(struct fsg_dev *fsg)
 
 
 /*-------------------------------------------------------------------------*/
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-static int open_backing_file(struct fsg_dev *fsg, struct lun *curlun, const char *filename);
-#endif
 
 static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 {
- //USB_PRINT("[USB:UMS] %s ++\n", __func__);
- char *buf = (char *) bh->buf;
-
- if (!fsg->curlun) {  /* Unsupported LUNs are okay */
-  fsg->bad_lun_okay = 1;
-  memset(buf, 0, 36);
-  buf[0] = 0x7f;  /* Unsupported, no device-type */
-  return 36;
- }
-
- memset(buf, 0, 8); /* Non-removable, direct-access device */
- printk("[USB:UMS] Lun:%d\n", fsg->lun); 
-
- buf[1] = 0x80; /* set removable bit */
- buf[2] = 2;  /* ANSI SCSI level 2 */
- buf[3] = 2;  /* SCSI-2 INQUIRY data format */
- buf[4] = 31;  /* Additional length */
-    /* No special options */    
-//by ss1
-#if 0
- sprintf(buf + 8, "%-8s%-16s%04x", fsg->vendor, fsg->product, fsg->release);
- printk("[USB:UMS] Vendor:%s, Product:%s, Rel:%x\n", fsg->vendor, fsg->product, fsg->release);
-#else
- {
-  /* Internal Device : Phone, External Device : Card*/
-  if(fsg->lun==0)
-  {  
-   sprintf(buf + 8, "%-8s%-16s%04x", "SAMSUNG ", "SCH-I500 Card", fsg->release);
-   printk("[USB:UMS] Buf+8:%s\n", buf+8);
-  }
-  else
-  {
-   sprintf(buf + 8, "%-8s%-16s%04x", "SAMSUNG ", "SCH-I500       ", fsg->release);
-   printk("[USB:UMS] Buf+8:%s\n", buf+8);
-  }
- }
-#endif
- //USB_PRINT("[USB:UMS] %s --\n", __func__);
- return 36;
-}
-
-
-
-//denis - do_inquiry_cdrom - for test VTP
-static int do_inquiry_cdrom(struct fsg_dev *fsg, struct fsg_buffhd *bh)
-{
 	u8	*buf = (u8 *) bh->buf;
-    int ret = 0;
+    struct lun		*curlun = fsg->curlun;
 
-	static char vendor_id[] = "SAMSUNG ";
-	static char product_id[] = "CD-ROM          ";
-	static char release[] = "0.01";
-	static char vendor_str[] = "MOBILE CDROM        ";
+	static char vendor_id[] = "Android   ";
+	static char product_disk_id[] = "UMS DISK      ";
+	static char product_cdrom_id[] = "UMS CD-ROM    ";
 
-	if (!fsg->curlun) {		// Unsupported LUNs are okay
+    DBG(fsg,"do_inquiry fsg->cdrom %d curlun->id %d\n",fsg->cdrom,curlun->id);
+    printk("printk:do_inquiry fsg->cdrom %d curlun->id %d\n",fsg->cdrom,curlun->id);
+	if (!fsg->curlun) {		/* Unsupported LUNs are okay */
 		fsg->bad_lun_okay = 1;
 		memset(buf, 0, 36);
-		buf[0] = 0x7f;		// Unsupported, no device-type
+		buf[0] = 0x7f;		/* Unsupported, no device-type */
 		return 36;
 	}
 
-	memset(buf, 0, 8);	// Non-removable, direct-access device
+	memset(buf, 0, 8);	/* Non-removable, direct-access device */
 
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-	buf[0] = TYPE_CDROM;
+	buf[0] = (curlun->id ? TYPE_DISK  : TYPE_CDROM);
+
+	buf[1] = 0x80;	/* set removable bit */
+	buf[2] = 2;		/* ANSI SCSI level 2 */
+	buf[3] = 2;		/* SCSI-2 INQUIRY data format */
+	buf[4] = 31;		/* Additional length */
+				/* No special options */
+//by ss1
+#if 0
+	sprintf(buf + 8, "%-8s%-16s%04x", fsg->vendor,
+			fsg->product, fsg->release);
 #else
-	buf[0] = 5;
-#endif
-	buf[1] = 0x80;
-	buf[2] = 2;		// ANSI SCSI level 2
-	buf[3] = 2;		// SCSI-2 INQUIRY data format
-	buf[4] = 0x33;		// Additional length
-	buf[5] = 0;
-	buf[6] = 0;
-	buf[7] = 0x10;
+	sprintf(buf + 8, "%-8s%-16s%04x", vendor_id,
+			(curlun->id ? product_disk_id : product_cdrom_id),
+			fsg->release);
 
-	//sprintf(buf + 8, "%-8s%-16s%-4s", vendor_id, product_id, release);
-	sprintf(buf + 8, "%-8s%-16s%-4s%-20s", vendor_id, product_id, release, vendor_str);
-
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-    //XXXXX - open the cdrom iso file
-    printk(">>> CD-ROM open_backing_file called. Current LUN: %d.\n", fsg->curlun);
-#ifdef FEATURE_TOOL_LAUNCHER //********************************	
-    if(is_tool_launcher_enabled())
-        ret = open_backing_file(fsg, fsg->curlun, "/etc/verizon_i500.iso");
+if(fsg->lun==1)
+  {  
+#if defined(CONFIG_ARIES_EUR)
+   sprintf(buf + 8, "%-8s%-16s%04x", "SAMSUNG ", "GT-I9000 ", fsg->release);
+#elif defined(CONFIG_ARIES_NTT)
+   sprintf(buf + 8, "%-8s%-16s%04x", "SAMSUNG ", "SC-02B Card", fsg->release);
 #endif
-    printk("open_backing_file returned %d.\n", ret);
+   printk("[USB:UMS] Buf+8:%s\n", buf+8);
+  }
+  else if(fsg->lun==2)
+  {
+#if defined(CONFIG_ARIES_EUR)
+   sprintf(buf + 8, "%-8s%-32s%04x", "SAMSUNG ", "GT-I9000 Card", fsg->release);
+#elif defined(CONFIG_ARIES_NTT)
+   sprintf(buf + 8, "%-8s%-16s%04x", "SAMSUNG ", "SC-02B       ", fsg->release);
 #endif
-	return 36+20;
+   printk("[USB:UMS] Buf+8:%s\n", buf+8);
+  }
+#endif
+	return 36;
 }
 
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
+
+
 static void store_cdrom_address(u8 *dest, int msf, u32 addr)
 {
 	if (msf) {
@@ -1526,7 +1492,7 @@ static int do_read_toc(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	store_cdrom_address(&buf[16], msf, curlun->num_sectors);
 	return 20;
 }
-#endif
+
 
 static int do_request_sense(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 {
@@ -1685,15 +1651,10 @@ static int do_mode_sense(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	return len;
 }
 
-#define LOLM 0x03
 static int do_start_stop(struct fsg_dev *fsg)
 {
 	struct lun	*curlun = fsg->curlun;
 	int		loej, start;
-        //BAHK 2010.06.01. If load media is received, set USB to user set setting.
-#ifdef FEATURE_TOOL_LAUNCHER	
-    int loadmedia;
-#endif
 
 	//denis
 	if (UmsCDEnable && fsg_platform_device ) {
@@ -1705,40 +1666,14 @@ static int do_start_stop(struct fsg_dev *fsg)
 	/* int immed = fsg->cmnd[1] & 0x01; */
 	loej = fsg->cmnd[4] & 0x02;
 	start = fsg->cmnd[4] & 0x01;
-#ifdef FEATURE_TOOL_LAUNCHER // gets load media command
-    loadmedia = fsg->cmnd[4] & LOLM;
-#endif
 
 	if (loej) {
 		/* eject request from the host */
-        DEBUG_TL("EJECT CMD received.\n");
 		if (backing_file_is_open(curlun)) {
 			close_backing_file(fsg, curlun);
 			curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
 		}
-#ifdef FEATURE_TOOL_LAUNCHER        
-        if(is_tool_launcher_enabled()==true)
-        {
-            int mode = 0;
-            mode = get_user_usb_mode_setting();
-            set_tool_launcher_setting(TOOL_LAUNCHER_STATE_ENABLED_DONE);
-            usb_switch_usb_mode_tool_launcher(mode);
-        }
-#endif
 	}
-#ifdef FEATURE_TOOL_LAUNCHER	
-        //BAHK  2010.06.01. If load media is received, set USB to user set setting.
-    if (loadmedia) 
-    {
-        if(is_tool_launcher_enabled()==true)
-        {
-            int mode = 0;
-            mode = get_user_usb_mode_setting();
-            set_tool_launcher_setting(TOOL_LAUNCHER_STATE_ENABLED_DONE);
-            usb_switch_usb_mode_tool_launcher(mode);
-        }
-    }
-#endif
 
 	return 0;
 }
@@ -2116,6 +2051,7 @@ static int do_scsi_command(struct fsg_dev *fsg)
 	int			reply = -EINVAL;
 	int			i;
 	static char		unknown[16];
+    struct lun      *curlun = fsg->curlun;
 
 	dump_cdb(fsg);
 
@@ -2137,40 +2073,7 @@ static int do_scsi_command(struct fsg_dev *fsg)
 		if ((reply = check_command(fsg, 6, DATA_DIR_TO_HOST,
 				(1<<4), 0,
 				"INQUIRY")) == 0)
-				
-		//denis
-		{
-#ifdef FEATURE_TOOL_LAUNCHER //********************************	
-            if(is_tool_launcher_enabled())
-            {
-                if(get_tool_launcher_setting()==TOOL_LAUNCHER_STATE_ENABLED_READY)
-                {
-                        reply = do_inquiry_cdrom(fsg, bh);
-                }
-                else if(get_tool_launcher_setting()==TOOL_LAUNCHER_STATE_ENABLED_DONE)
-                {
-                        reply = do_inquiry(fsg, bh);
-                }
-            }
-            else
-            {
-                    reply = do_inquiry(fsg, bh);
-            }
-#else //FEATURE_TOOL_LAUNCHER  //********************************	
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-			if(fsg->lun == 2)
-				reply = do_inquiry_cdrom(fsg, bh);
-            else
-#else //FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-#if 0 // CD enabled not available for 2010.06.02 release.
-			if(UmsCDEnable)
-				reply = do_inquiry_cdrom(fsg, bh);
-			else
-#endif
-#endif //FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-			    reply = do_inquiry(fsg, bh);
-#endif //FEATURE_TOOL_LAUNCHER  //********************************	
-		}
+			reply = do_inquiry(fsg, bh);
 		break;
 
 	case SC_MODE_SELECT_6:
@@ -2244,10 +2147,10 @@ static int do_scsi_command(struct fsg_dev *fsg)
 				(0xf<<2) | (1<<8), 1,
 				"READ CAPACITY")) == 0)
 			reply = do_read_capacity(fsg, bh);
-		break;
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
+    	break;
+
 	case SC_READ_HEADER:
-		//if (!curlun->id) goto unknown_cmnd;
+		if (curlun->id) goto unknown_cmnd;
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]);
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
 				(3<<7) | (0x1f<<1), 1,
@@ -2256,14 +2159,14 @@ static int do_scsi_command(struct fsg_dev *fsg)
 		break;
 
 	case SC_READ_TOC:
-		//if (!curlun->id)	goto unknown_cmnd;
+		if (curlun->id)	goto unknown_cmnd;
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]);
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
 				(7<<6) | (1<<1), 1,
 				"READ TOC")) == 0)
 			reply = do_read_toc(fsg, bh);
 		break;
-#endif
+
 	case SC_READ_FORMAT_CAPACITIES:
 		fsg->data_size_from_cmnd = get_be16(&fsg->cmnd[7]);
 		if ((reply = check_command(fsg, 10, DATA_DIR_TO_HOST,
@@ -2349,7 +2252,7 @@ static int do_scsi_command(struct fsg_dev *fsg)
 		/* Fall through */
 
 	default:
-	unknown_cmnd:
+    unknown_cmnd:
 		fsg->data_size_from_cmnd = 0;
 		sprintf(unknown, "Unknown x%02x", fsg->cmnd[0]);
 		if ((reply = check_command(fsg, fsg->cmnd_size,
@@ -2361,10 +2264,13 @@ static int do_scsi_command(struct fsg_dev *fsg)
 	}
 	up_read(&fsg->filesem);
 
-	VDBG(fsg, "reply: %d, fsg->data_size_from_cmnd: %d\n",
-			reply, fsg->data_size_from_cmnd);
-	if (reply == -EINTR || signal_pending(current))
-		return -EINTR;
+if (fsg->curlun) 
+	    LDBG(fsg->curlun, "reply: %d, fsg->data_size_from_cmnd: %d\n",reply, fsg->data_size_from_cmnd);
+	else
+	    DBG(fsg, "reply: %d, fsg->data_size_from_cmnd: %d\n",reply, fsg->data_size_from_cmnd);
+
+    if (reply == -EINTR || signal_pending(current))
+            return -EINTR;
 
 	/* Set up the single reply buffer for finish_reply() */
 	if (reply == -EINVAL)
@@ -2540,7 +2446,6 @@ static int do_set_interface(struct fsg_dev *fsg, int altsetting)
 
 	if (fsg->running)
 		DBG(fsg, "reset interface\n");
-
 
 
 	/* Disable the endpoints */
@@ -2949,6 +2854,7 @@ static int open_backing_file(struct fsg_dev *fsg, struct lun *curlun,
 	struct inode			*inode = NULL;
 	loff_t				size;
 	loff_t				num_sectors;
+    loff_t              min_sectors;
 
 	/* R/W if we can, R/O if we must */
 	ro = curlun->ro;
@@ -2993,7 +2899,18 @@ static int open_backing_file(struct fsg_dev *fsg, struct lun *curlun,
 		goto out;
 	}
 	num_sectors = size >> 9;	/* File size in 512-byte sectors */
-	if (num_sectors == 0) {
+	min_sectors = 1;
+	if (!curlun->id) {
+		num_sectors &= ~3;	// Reduce to a multiple of 2048
+		min_sectors = 300*4;	// Smallest track is 300 frames
+		if (num_sectors >= 256*60*75*4) {
+			num_sectors = (256*60*75 - 1) * 4;
+			LINFO(curlun, "file too big: %s\n", filename);
+			LINFO(curlun, "using only first %d blocks\n",
+					(int) num_sectors);
+		}
+	}
+	if (num_sectors < min_sectors) {
 		LINFO(curlun, "file too small: %s\n", filename);
 		rc = -ETOOSMALL;
 		goto out;
@@ -3003,10 +2920,13 @@ static int open_backing_file(struct fsg_dev *fsg, struct lun *curlun,
 	curlun->ro = ro;
 	curlun->filp = filp;
 	curlun->file_length = size;
+	curlun->unflushed_bytes = 0;
 	curlun->num_sectors = num_sectors;
-	LDBG(curlun, "open backing file: %s size: %lld num_sectors: %lld\n",
-			filename, size, num_sectors);
-	rc = 0;
+    LDBG(curlun, "open backing file: %s size: %lld num_sectors: %lld\n",
+         filename, size, num_sectors);
+    printk(KERN_INFO "open backing file: %s size: %lld num_sectors: %lld\n",
+         filename, size, num_sectors);
+    rc = 0;
 	adjust_wake_lock(fsg);
 
 out:
@@ -3057,16 +2977,7 @@ static ssize_t show_file(struct device *dev, struct device_attribute *attr,
 
 	down_read(&fsg->filesem);
 	if (backing_file_is_open(curlun)) {	/* Get the complete pathname */
-
-//denis
-#if 0
-		p = d_path(curlun->filp->f_path.dentry,
-						curlun->filp->f_path.mnt, buf, PAGE_SIZE - 1);
-#else
-
 		p = d_path(&curlun->filp->f_path, buf, PAGE_SIZE - 1);
-#endif
-
 		if (IS_ERR(p))
 			rc = PTR_ERR(p);
 		else {
@@ -3091,6 +3002,7 @@ static ssize_t store_file(struct device *dev, struct device_attribute *attr,
 	int		rc = 0;
 
 	DBG(fsg, "store_file: \"%s\"\n", buf);
+    printk(KERN_INFO "store_file: \"%s\"\n", buf);
 #if 0
 	/* disabled because we need to allow closing the backing file if the media was removed */
 	if (curlun->prevent_medium_removal && backing_file_is_open(curlun)) {
@@ -3123,35 +3035,6 @@ static ssize_t store_file(struct device *dev, struct device_attribute *attr,
 
 
 static DEVICE_ATTR(file, 0444, show_file, store_file);
-
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-static ssize_t show_cdrom(struct device *dev, struct device_attribute *attr,
-		char *buf)
-{
-	struct fsg_dev	*fsg = dev_get_drvdata(dev);
-    struct lun		*curlun = fsg->curlun;
-
-    printk(KERN_INFO "show_cdrom++ curlun->id %d curlun->cdrom %d\n",curlun->id,curlun->cdrom);
-    return sprintf(buf, "%d\n", fsg->cdrom);
-}
-
-static ssize_t store_cdrom(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-	struct fsg_dev	*fsg = dev_get_drvdata(dev);
-    struct lun		*curlun = fsg->curlun;
-	int value;
-    printk(KERN_INFO "store_cdrom++ curlun->id %d\n",curlun->id);
-
-	sscanf(buf, "%d", &value);
-	curlun->cdrom = value;    
-	//fsg->cdrom = value;
-    printk(KERN_INFO "store_cdrom++ curlun->id %d curlun->cdrom %d\n",curlun->id,curlun->cdrom);
-	return count;
-}
-
-static DEVICE_ATTR(cdrom, S_IRUGO | S_IWUSR, show_cdrom, store_cdrom);
-#endif
 
 /*-------------------------------------------------------------------------*/
 
@@ -3271,24 +3154,21 @@ fsg_function_bind(struct usb_configuration *c, struct usb_function *f)
 	struct usb_ep		*ep;
 	char			*pathbuf, *p;
 
-	DBG(fsg, "fsg_function_bind\n");
-
+	fsg->cdev = cdev;
+	DBG(fsg, "fsg_function_bind cdrom patch applied\n");
+    fsg->nluns = 3;
+    printk(KERN_INFO "fsg_function_bind cdrom patch after fsg->nluns %d\n",fsg->nluns);
+    
 	dev_attr_file.attr.mode = 0644;
 
 	/* Find out how many LUNs there should be */
 	i = fsg->nluns;
-
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-    if (i == 0)
-         i = F_MASS_STORAGE_NUMBER_OF_DISKS;
-#else
-	if (i == 0)
-	    i = F_MASS_STORAGE_NUMBER_OF_DISKS; //denis.
-#endif
+	if (i == 0) {
 	if (i > MAX_LUNS) {
 		ERROR(fsg, "invalid number of LUNs: %d\n", i);
 		rc = -EINVAL;
 		goto out;
+	}
 	}
 
 	/* Create the LUNs, open their backing files, and register the
@@ -3302,12 +3182,22 @@ fsg_function_bind(struct usb_configuration *c, struct usb_function *f)
 
 	for (i = 0; i < fsg->nluns; ++i) {
 		curlun = &fsg->luns[i];
+		/* lun 0 : cdrom. read-only 
+		   lun 1 : internel storage. read-write 
+		   lun 2 : externel sd-card. read-write */
+		if (i == 0)
+			curlun->ro = 1;
+		else
 		curlun->ro = 0;
+		curlun->id = i;
+
 		curlun->dev.release = lun_release;
+		if (fsg->pdev)
+			curlun->dev.parent = &fsg->pdev->dev;
+		else
 		curlun->dev.parent = &cdev->gadget->dev;
 		dev_set_drvdata(&curlun->dev, fsg);
-		snprintf(curlun->dev.bus_id, BUS_ID_SIZE,
-				"lun%d", i);
+		dev_set_name(&curlun->dev,"lun%d", i);
 
 		rc = device_register(&curlun->dev);
 		if (rc != 0) {
@@ -3320,15 +3210,6 @@ fsg_function_bind(struct usb_configuration *c, struct usb_function *f)
 			device_unregister(&curlun->dev);
 			goto out;
 		}
-
-#ifdef FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-		rc = device_create_file(&curlun->dev, &dev_attr_cdrom);
-		if (rc != 0) {
-			ERROR(fsg, "device_create_file failed: %d\n", rc);
-			device_unregister(&curlun->dev);
-			goto out;
-		}
-#endif
 		curlun->registered = 1;
 		kref_get(&fsg->ref);
 	}
@@ -3405,6 +3286,9 @@ fsg_function_bind(struct usb_configuration *c, struct usb_function *f)
 	kfree(pathbuf);
 
 	set_bit(REGISTERED, &fsg->atomic_bitflags);
+
+    DBG(fsg,"CDROM patch enabled\n");//Merge solutions Alan Stern and Mike Loockwood by d.moskvitin
+    DBG(fsg,"fsg->cdrom %d\n",fsg->cdrom);
 
 	/* Tell the thread to start working */
 	wake_up_process(fsg->thread_task);
@@ -3554,7 +3438,9 @@ int __init mass_storage_function_add(struct usb_configuration *c, int nluns)
 		goto err_usb_add_function;
 
 	UmsInitStatus=1;
-
+    DBG(fsg, "mass_storage_function_add success\n");
+    printk(KERN_INFO "shaman: mass_storage_function_add success\n");
+ 
 	return 0;
 
 err_usb_add_function:

@@ -25,12 +25,12 @@
 #include <asm/delay.h>
 #include <asm/irq.h>
 
-#include <plat/regs-gpio.h>
+#include <mach/regs-gpio.h>
 #include <mach/gpio.h>
 #include <plat/gpio-cfg.h>
 #include <plat/regs-keypad.h>
 #ifdef CONFIG_CPU_FREQ
-#include <plat/s5pc11x-dvfs.h>
+#include <mach/cpu-freq-v210.h>
 #endif
  
 #include "s3c-keypad.h"
@@ -41,8 +41,14 @@
 
 #ifdef S3C_KEYPAD_DEBUG
 #define DPRINTK(x...) printk("S3C-Keypad " x)
+#define INPUT_REPORT_KEY(a,b,c) do {				\
+		printk(KERN_ERR "%s:%d input_report_key(%x, %d, %d)\n", \
+		       __func__, __LINE__, a, b, c);			\
+		input_report_key(a,b,c);				\
+	} while (0)
 #else
 #define DPRINTK(x...)		/* !!!! */
+#define INPUT_REPORT_KEY	input_report_key
 #endif
 
 #define DEVICE_NAME "s3c-keypad"
@@ -65,22 +71,24 @@ static struct clk *keypad_clock;
 static u32 keymask[KEYPAD_COLUMNS];
 static u32 prevmask[KEYPAD_COLUMNS];
 
+static int in_sleep = 0;
+
 #if defined (CONFIG_MACH_S5PC110_P1P2)
 static int keypad_scan(void)
 {
 
 	u32 col,rval,gpio;
 
-	DPRINTK("H3C %x J2C %x, J3c %x J4c%x \n",readl(S5PC11X_GPH3CON),readl(S5PC11X_GPJ2CON),
-		readl(S5PC11X_GPJ3CON), readl(S5PC11X_GPJ4CON));
+	DPRINTK("H3C %x J2C %x, J3c %x J4c%x \n",readl(S5PV210_GPH3CON),readl(S5PV210_GPJ2CON),
+		readl(S5PV210_GPJ3CON), readl(S5PV210_GPJ4CON));
 	DPRINTK("keypad_scan() is called\n");
 
 	DPRINTK("row val = %x",readl(key_base + S3C_KEYIFROW));
 
-	for (gpio = S5PC11X_GPJ2(7); gpio <= S5PC11X_GPJ4(4); gpio++)
+	for (gpio = S5PV210_GPJ2(7); gpio <= S5PV210_GPJ4(4); gpio++)
 		s3c_gpio_setpin(gpio, 1);
 		
-	for (col=0,gpio = S5PC11X_GPJ2(7); col < KEYPAD_COLUMNS; col++,gpio++) {
+	for (col=0,gpio = S5PV210_GPJ2(7); col < KEYPAD_COLUMNS; col++,gpio++) {
 
 		if(s3c_gpio_setpin(gpio, 0) < 0)
 			s3c_gpio_setpin(++gpio, 0);
@@ -89,7 +97,7 @@ static int keypad_scan(void)
 		udelay(100);
 
 		//rval = ~(readl(key_base+S3C_KEYIFROW)) & ((1<<KEYPAD_ROWS)-1) ;
-		rval = ~(readl(S5PC11X_GPH3DAT)) & ((1<<KEYPAD_ROWS)-1) ;
+		rval = ~(readl(S5PV210_GPH3DAT)) & ((1<<KEYPAD_ROWS)-1) ;
 		
 
 		keymask[col] = rval; 
@@ -97,7 +105,7 @@ static int keypad_scan(void)
 		s3c_gpio_setpin(gpio,1);
 	}
 
-	for (gpio = S5PC11X_GPJ2(7); gpio <= S5PC11X_GPJ4(4); gpio++)
+	for (gpio = S5PV210_GPJ2(7); gpio <= S5PV210_GPJ4(4); gpio++)
 		s3c_gpio_setpin(gpio, 0);
 
 	return 0;
@@ -109,11 +117,11 @@ static int keypad_scan(void)
 
 	u32 col,cval,rval,gpio;
 
-	DPRINTK("H3C %x H2C %x \n",readl(S5PC11X_GPH3CON),readl(S5PC11X_GPH2CON));
+	DPRINTK("H3C %x H2C %x \n",readl(S5PV210_GPH3CON),readl(S5PV210_GPH2CON));
 	DPRINTK("keypad_scan() is called\n");
 
 	DPRINTK("row val = %x",readl(key_base + S3C_KEYIFROW));
-#if 0
+
 	for (col=0; col < KEYPAD_COLUMNS; col++) {
 
 		cval = KEYCOL_DMASK & ~((1 << col) | (1 << col+ 8)); // clear that column number and 
@@ -125,21 +133,7 @@ static int keypad_scan(void)
 		rval = ~(readl(key_base+S3C_KEYIFROW)) & ((1<<KEYPAD_ROWS)-1) ;
 		keymask[col] = rval; 
 	}
-#else
-//for (col=0; col < KEYPAD_COLUMNS; col++) {
-  col = 1;
-  cval = KEYCOL_DMASK & ~((1 << col) | (1 << col+ 8)); // clear that column number and 
 
-  writel(cval, key_base+S3C_KEYIFCOL);             // make that Normal output.
-               // others shuld be High-Z output.
-  udelay(KEYPAD_DELAY);
-
-  rval = ~(readl(key_base+S3C_KEYIFROW)) & ((1<<KEYPAD_ROWS)-1) ;
-  keymask[col] = rval&0x02; 
-
-//}
-
-#endif
 	writel(KEYIFCOL_CLEAR, key_base+S3C_KEYIFCOL);
 
 	return 0;
@@ -166,7 +160,7 @@ static void keypad_timer_handler(unsigned long data)
 #ifdef CONFIG_CPU_FREQ
 #if USE_PERF_LEVEL_KEYPAD
 		if (press_mask || release_mask)
-			set_dvfs_perf_level();
+			set_dvfs_target_level(LEV_400MHZ);
 #endif
 #endif
 		i = col * KEYPAD_ROWS;
@@ -174,8 +168,7 @@ static void keypad_timer_handler(unsigned long data)
 		while (press_mask) {
 			if (press_mask & 1) {
 				input_report_key(dev,pdata->keycodes[i],1);
-				pr_err("[key_press] keycode=%d\n", i+1);
-				//DPRINTK("\nkey Pressed  : key %d map %d\n",i, pdata->keycodes[i]);
+				DPRINTK("\nkey Pressed  : key %d map %d\n",i, pdata->keycodes[i]);
 						}
 			press_mask >>= 1;
 			i++;
@@ -186,8 +179,7 @@ static void keypad_timer_handler(unsigned long data)
 		while (release_mask) {
 			if (release_mask & 1) {
 				input_report_key(dev,pdata->keycodes[i],0);
-				pr_err("[key_release] keycode=%d\n", i+1);				
-				//DPRINTK("\nkey Released : %d  map %d\n",i,pdata->keycodes[i]);
+				DPRINTK("\nkey Released : %d  map %d\n",i,pdata->keycodes[i]);
 
             }
 			release_mask >>= 1;
@@ -233,21 +225,32 @@ static irqreturn_t s3c_keypad_isr(int irq, void *dev_id)
 static irqreturn_t s3c_keygpio_isr(int irq, void *dev_id)
 {
 	unsigned int key_status;
+	static unsigned int prev_key_status = (1 << 6);
 	struct s3c_keypad *pdata = (struct s3c_keypad *)dev_id;
 	struct input_dev *dev = pdata->dev;
 
-	
-	key_status = (readl(S5PC11X_GPH2DAT)) & (1 << 6);
-	
-	if(key_status)
-		input_report_key(dev,26,0);
-	else
-		input_report_key(dev,26,1);
+	// Beware that we may not obtain exact key up/down status at
+	// this point.
+	key_status = (readl(S5PV210_GPH2DAT)) & (1 << 6);
 
-	printk(KERN_DEBUG "s3c_keygpio_isr key_status =%d,\n", key_status);
-	//printk(KERN_DEBUG "eint 2 irq status s3c_keygpio_isr PEND= %d, MASK = %d\n", readl(S5PC11X_EINTPEND(2)), readl(S5PC11X_EINTMASK(2)));
+	// If ISR is called and up/down status remains the same, we
+	// must have lost one and should report that first with
+	// upside/down.
+	if(in_sleep)
+	{
+		if (key_status == prev_key_status)
+		{
+			INPUT_REPORT_KEY(dev, 26, key_status ? 1 : 0);
+		}
+		in_sleep = 0;
+	}
+	
+	INPUT_REPORT_KEY(dev, 26, key_status ? 0 : 1);
 
-        return IRQ_HANDLED;
+	prev_key_status = key_status;
+	printk(KERN_DEBUG "s3c_keygpio_isr pwr key_status =%d\n", key_status);
+
+	return IRQ_HANDLED;
 }
 
 static irqreturn_t s3c_keygpio_vol_up_isr(int irq, void *dev_id)
@@ -257,12 +260,9 @@ static irqreturn_t s3c_keygpio_vol_up_isr(int irq, void *dev_id)
 	struct input_dev *dev = pdata->dev;
 
 	//we cannot check HWREV 0xb and 0xc, we check 2 hw key
-	key_status = (readl(S5PC11X_GPH3DAT)) & ((1 << 3));
+	key_status = (readl(S5PV210_GPH3DAT)) & ((1 << 3));
 	
-	if(key_status == ((1 << 3)))
-		input_report_key(dev,42,0);
-	else
-		input_report_key(dev,42,1);
+	INPUT_REPORT_KEY(dev, 42, key_status ? 0 : 1);
 
        printk(KERN_DEBUG "s3c_keygpio_vol_up_isr key_status =%d,\n", key_status);
        
@@ -276,12 +276,9 @@ static irqreturn_t s3c_keygpio_vol_up26_isr(int irq, void *dev_id)
 	struct s3c_keypad *pdata = (struct s3c_keypad *)dev_id;
 	struct input_dev *dev = pdata->dev;
 
-	key_status = (readl(S5PC11X_GPH3DAT)) & ((1 << 2));
+	key_status = (readl(S5PV210_GPH3DAT)) & ((1 << 2));
 	
-	if(key_status == ( (1 << 2)))
-		input_report_key(dev,42,0);
-	else
-		input_report_key(dev,42,1);
+	INPUT_REPORT_KEY(dev, 42, key_status ? 0 : 1);
 
        printk(KERN_DEBUG "s3c_keygpio_vol_up26_isr key_status =%d,\n", key_status);
        
@@ -294,16 +291,12 @@ static irqreturn_t s3c_keygpio_vol_down_isr(int irq, void *dev_id)
 	struct s3c_keypad *pdata = (struct s3c_keypad *)dev_id;
 	struct input_dev *dev = pdata->dev;
 
+	key_status = (readl(S5PV210_GPH3DAT)) & (1 << 1);
 	
-	key_status = (readl(S5PC11X_GPH3DAT)) & (1 << 1);
+	INPUT_REPORT_KEY(dev, 58, key_status ? 0 : 1);
 	
-	if(key_status)
-		input_report_key(dev,58,0);
-	else
-		input_report_key(dev,58,1);
-
 	printk(KERN_DEBUG "s3c_keygpio_vol_down_isr key_status =%d,\n", key_status);
-	
+
         return IRQ_HANDLED;
 }
 
@@ -311,88 +304,78 @@ extern void TSP_forced_release_forOKkey(void);
 static irqreturn_t s3c_keygpio_ok_isr(int irq, void *dev_id)
 {
 	unsigned int key_status;
+	static unsigned int prev_key_status = (1 << 5);
 	struct s3c_keypad *pdata = (struct s3c_keypad *)dev_id;
 	struct input_dev *dev = pdata->dev;
 
-	//we cannot check HWREV 0xb and 0xc, we check 2 hw key
-	key_status = (readl(S5PC11X_GPH3DAT)) & ((1 << 5));
-	if(key_status == ((1 << 5))){
-		TSP_forced_release_forOKkey();
-		input_report_key(dev,50,0);
-		}
-	else
-		input_report_key(dev,50,1);
+	#ifdef CONFIG_CPU_FREQ
+	set_dvfs_target_level(LEV_800MHZ);
+	#endif
+	// Beware that we may not obtain exact key up/down status at
+	// this point.
+	key_status = (readl(S5PV210_GPH3DAT)) & ((1 << 5));
 
-        printk(KERN_DEBUG "s3c_keygpio_ok_isr key_status =%d,\n", key_status);
+	// If ISR is called and up/down status remains the same, we
+	// must have lost one and should report that first with
+	// upside/down.
+	if(in_sleep)
+	{
+		if (key_status == prev_key_status)
+		{
+			INPUT_REPORT_KEY(dev, 50, key_status ? 1 : 0);
+		}
+		in_sleep = 0;
+	}
+
+	INPUT_REPORT_KEY(dev, 50, key_status ? 0 : 1);
+
+	if(key_status)
+		TSP_forced_release_forOKkey();
+	
+	prev_key_status = key_status;
+        printk(KERN_DEBUG "s3c_keygpio_ok_isr key_status =%d\n", key_status);
         
         return IRQ_HANDLED;
 }
-
-extern unsigned int HWREV;
 
 static int s3c_keygpio_isr_setup(void *pdev)
 {
 	int ret;
 
-//	if(HWREV >= 0xB) //yhkim block it for Verizon ATLAS. 
-	{
-		if(HWREV >= 0x2) //yhkim change to 0x2 for Verizon ATLAS. 
-		{
-			//volume down
-			s3c_gpio_setpull(S5PC11X_GPH3(1), S3C_GPIO_PULL_UP);
-			set_irq_type(IRQ_EINT(25), IRQ_TYPE_EDGE_BOTH);
-			ret = request_irq(IRQ_EINT(25), s3c_keygpio_vol_down_isr, IRQF_SAMPLE_RANDOM,
-			    "key vol down", (void *) pdev);
-			if (ret) {
-				printk("request_irq failed (IRQ_KEYPAD (key vol down)) !!!\n");
-				ret = -EIO;
-				return ret;
-			}
-
-            
-			//volume up
-				printk("\n\n[Keypad] Setup VolUp Key interrupt(%d)!!\n",HWREV);
-			s3c_gpio_setpull(S5PC11X_GPH3(3), S3C_GPIO_PULL_UP);
-			set_irq_type(IRQ_EINT(27), IRQ_TYPE_EDGE_BOTH);
-			ret = request_irq(IRQ_EINT(27), s3c_keygpio_vol_up_isr, IRQF_SAMPLE_RANDOM,
-					"key vol up", (void *) pdev);
-			if (ret) {
-					printk("request_irq failed (IRQ_KEYPAD (key vol up)) !!!\n");
-					ret = -EIO;
+		//volume down
+	s3c_gpio_setpull(S5PV210_GPH3(1), S3C_GPIO_PULL_NONE);
+		set_irq_type(IRQ_EINT(25), IRQ_TYPE_EDGE_BOTH);
+	        ret = request_irq(IRQ_EINT(25), s3c_keygpio_vol_down_isr, IRQF_SAMPLE_RANDOM,
+	                "key vol down", (void *) pdev);
+	        if (ret) {
+	                printk("request_irq failed (IRQ_KEYPAD (key vol down)) !!!\n");
+	                ret = -EIO;
 			  return ret;
-			}
-
-		}
-		else
-		{
-			//volume up
-			s3c_gpio_setpull(S5PC11X_GPH3(3), S3C_GPIO_PULL_UP);
-			set_irq_type(IRQ_EINT(27), IRQ_TYPE_EDGE_BOTH);
-		        ret = request_irq(IRQ_EINT(27), s3c_keygpio_vol_up_isr, IRQF_SAMPLE_RANDOM,
-		                "key vol up", (void *) pdev);
-		        if (ret) {
-		                printk("request_irq failed (IRQ_KEYPAD (key vol up)) !!!\n");
-		                ret = -EIO;
-				  return ret;
-		        }
-		}
-
+	        }
+		
+		//volume up
+	s3c_gpio_setpull(S5PV210_GPH3(2), S3C_GPIO_PULL_NONE);
+		set_irq_type(IRQ_EINT(26), IRQ_TYPE_EDGE_BOTH);
+				ret = request_irq(IRQ_EINT(26), s3c_keygpio_vol_up26_isr, IRQF_SAMPLE_RANDOM,
+				        "key vol up(26)", (void *) pdev);
+	        if (ret) {
+					printk("request_irq failed (IRQ_KEYPAD (key vol up(26))) !!!\n");
+	                ret = -EIO;
+			  return ret;
+	        }
 
 		//ok key
-		#if 0  //yhkim :: Verizon Atlas did not have OK key. 
-
-		//ok key
-		s3c_gpio_setpull(S5PC11X_GPH3(5), S3C_GPIO_PULL_UP);
+	s3c_gpio_setpull(S5PV210_GPH3(5), S3C_GPIO_PULL_NONE);
 		set_irq_type(IRQ_EINT(29), IRQ_TYPE_EDGE_BOTH);
-	        ret = request_irq(IRQ_EINT(29), s3c_keygpio_ok_isr, IRQF_SAMPLE_RANDOM,
-	                "key ok", (void *) pdev);
+	        ret = request_irq(IRQ_EINT(29), s3c_keygpio_ok_isr, IRQF_DISABLED
+				  | IRQF_SAMPLE_RANDOM, "key ok", (void *) pdev);
 	        if (ret) {
 	                printk("request_irq failed (IRQ_KEYPAD (key ok)) !!!\n");
 	                ret = -EIO;
 			  return ret;
 	        }
 
-		#endif 	
+			
 		//ok key
 		#if 0
 		s3c_gpio_setpull(S5PC11X_GPH3(0), S3C_GPIO_PULL_UP);
@@ -405,15 +388,18 @@ static int s3c_keygpio_isr_setup(void *pdev)
 			  return ret;
 	        }
 		 #endif
-	}
+
 
 	//PWR key
-	s3c_gpio_setpull(S5PC11X_GPH2(6), S3C_GPIO_PULL_UP);
+	s3c_gpio_setpull(S5PV210_GPH2(6), S3C_GPIO_PULL_NONE);
 
 	set_irq_type(IRQ_EINT(22), IRQ_TYPE_EDGE_BOTH);
-  
-        ret = request_irq(IRQ_EINT(22), s3c_keygpio_isr, IRQF_SAMPLE_RANDOM,
-                "key gpio", (void *) pdev);
+
+	// stk.lim: Add IRQF_DISABLED to eliminate any possible race
+	// regarding key status
+	ret = request_irq(IRQ_EINT(22), s3c_keygpio_isr, IRQF_DISABLED
+			  | IRQF_SAMPLE_RANDOM, "key gpio", (void *)pdev);
+
         if (ret) {
                 printk("request_irq failed (IRQ_KEYPAD (gpio)) !!!\n");
                 ret = -EIO;
@@ -427,49 +413,11 @@ static int s3c_keygpio_isr_setup(void *pdev)
 static ssize_t keyshort_test(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	int count;
-	int mask=0;
-        u32 col=0,cval=0,rval=0;
-        if(!gpio_get_value(S5PC11X_GPH2(6)))//Power Key
-        {
-         mask |= 0x1;
-        }
-        if(!gpio_get_value(S5PC11X_GPH3(3)))//Volume Up
-        {
-         mask |= 0x10;
-        }
-
-        if(HWREV >= 0x2) //yhkim change to 0x2 for Verizon ATLAS. 
-        {
-            if(!gpio_get_value(S5PC11X_GPH3(1)) )  //volume down
-           {
-               mask |= 0x100;
-           } 
-
-        }        
-        else 
-        {
-     //for Volume Down
-            col = 1;
-            cval = KEYCOL_DMASK & ~((1 << col) | (1 << col+ 8)); // clear that column number and 
-    
-            writel(cval, key_base+S3C_KEYIFCOL);             // make that Normal output.
-               // others shuld be High-Z output.
-            udelay(KEYPAD_DELAY);
 	
-            rval = ~(readl(key_base+S3C_KEYIFROW)) & ((1<<KEYPAD_ROWS)-1) ;
-            writel(KEYIFCOL_CLEAR, key_base+S3C_KEYIFCOL);
-//
-           if((rval&0x02))
-           {
-             mask |=0x100;
-           }
-        }
-
-
-    if(/*!gpio_get_value(GPIO_KBR0) || !gpio_get_value(GPIO_KBR1) || !gpio_get_value(GPIO_KBR2) || */ mask)
+       if(!gpio_get_value(GPIO_KBR0) || !gpio_get_value(GPIO_KBR1) || !gpio_get_value(GPIO_KBR2) || !gpio_get_value(GPIO_nPOWER)  || !gpio_get_value(S5PV210_GPH3(5)))
 	{
 		count = sprintf(buf,"PRESS\n");
-              printk("keyshort_test: PRESS\n",mask);
+              printk("keyshort_test: PRESS\n");
 	}
 	else
 	{
@@ -554,9 +502,9 @@ static int __init s3c_keypad_probe(struct platform_device *pdev)
 		set_bit(code & KEY_MAX, input_dev->keybit);
 	}
 
-      #if defined(CONFIG_ARIES_VER_B3)  
+	//printk("%s, keypad row number is %d, column is %d",__FUNCTION__, s3c_keypad->nr_rows, s3c_keypad->no_cols);
+
       set_bit(26 & KEY_MAX, input_dev->keybit);
-      #endif
       
 	input_dev->name = DEVICE_NAME;
 	input_dev->phys = "s3c-keypad/input0";
@@ -586,31 +534,10 @@ static int __init s3c_keypad_probe(struct platform_device *pdev)
 		ret = -ENOENT;
 		goto err_irq;
 	}
-	
-
-        if(HWREV < 0x2) //yhkim block it for Verizon ATLAS. 
-	{
-		ret = request_irq(keypad_irq->start, s3c_keypad_isr, IRQF_SAMPLE_RANDOM,
-			DEVICE_NAME, (void *) pdev);
-		if (ret) {
-			printk("request_irq failed (IRQ_KEYPAD) !!!\n");
-			ret = -EIO;
-			goto err_irq;
-		}
-
-		keypad_timer.expires = jiffies + (HZ/10);
-
-		if (is_timer_on == FALSE) {
-			add_timer(&keypad_timer);
-			is_timer_on = TRUE;
-		} else {
-			mod_timer(&keypad_timer,keypad_timer.expires);
-		}
-	}
 
 	s3c_keygpio_isr_setup((void *)s3c_keypad);
 	printk( DEVICE_NAME " Initialized\n");
-
+	
 	if (device_create_file(&pdev->dev, &dev_attr_key_pressed) < 0)
 	{
 		printk("%s s3c_keypad_probe\n",__FUNCTION__);
@@ -679,7 +606,7 @@ static int s3c_keypad_suspend(struct platform_device *dev, pm_message_t state)
 	keyifcon = readl(key_base+S3C_KEYIFCON);
 	keyiffc = readl(key_base+S3C_KEYIFFC);
 
-	s5pc11x_pm_do_save(s3c_keypad_save, ARRAY_SIZE(s3c_keypad_save));
+	s3c_pm_do_save(s3c_keypad_save, ARRAY_SIZE(s3c_keypad_save));
 	
 	//writel(~(0xfffffff), KEYPAD_ROW_GPIOCON);
 	//writel(~(0xfffffff), KEYPAD_COL_GPIOCON);
@@ -687,6 +614,8 @@ static int s3c_keypad_suspend(struct platform_device *dev, pm_message_t state)
 	disable_irq(IRQ_KEYPAD);
 
 	clk_disable(keypad_clock);
+
+	in_sleep = 1;
 
 	return 0;
 }
@@ -722,7 +651,7 @@ static int s3c_keypad_resume(struct platform_device *dev)
 
 	//printk("H3C %x H2C %x \n",readl(S5PC11X_GPH3CON),readl(S5PC11X_GPH2CON));
 #endif
-	s5pc11x_pm_do_restore(s3c_keypad_save, ARRAY_SIZE(s3c_keypad_save));
+	s3c_pm_do_restore(s3c_keypad_save, ARRAY_SIZE(s3c_keypad_save));
 
 	enable_irq(IRQ_KEYPAD);
 	printk(KERN_DEBUG "---- %s\n", __FUNCTION__ );

@@ -7,12 +7,12 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <asm/io.h>
-#include <plat/regs-gpio.h>
+#include <mach/regs-gpio.h>
+#include <mach/regs-clock.h>
 #include <plat/gpio-cfg.h>
 #include <plat/irqs.h>
 #include <mach/hardware.h>
-#include <mach/gpio-jupiter.h>
-#include <plat/regs-clock.h>
+#include <mach/gpio.h>
 #include <mach/gpio.h>
 #include <mach/battery.h>
 #include <mach/max8998_function.h>
@@ -28,11 +28,10 @@
 
 extern u8 FSA9480_Get_I2C_USB_Status(void);
 irqreturn_t pmic_irq(int irq, void *dev_id);
-void MAX8998_PM_IRQ_isr();
+void MAX8998_PM_IRQ_isr(void);
 void s3c_cable_changed(void);
 void s3c_cable_charging(void);
-void low_battery_power_off(void);	// lobat pwroff
-extern int s3c_bat_is_in_call(void);	// hanapark_DF25
+void low_battery_power_off(void);
 static enum hrtimer_restart pm_sys_init_done(struct hrtimer *timer);
 int pm_get_sys_init_status(void);
 void charging_mode_set(unsigned int val);
@@ -51,7 +50,7 @@ static struct hrtimer pm_sys_init_timer;
 static int pm_sys_start=PMIC_SYS_START;
 static	void	__iomem		*pmic_pend_mask_mem;
 static struct wake_lock pmic_wake_lock;
-static int low_bat1_int_status=0;	// lobat pwroff
+static int low_bat1_int_status=0;
 
 extern spinlock_t pmic_access_lock;
 
@@ -376,7 +375,7 @@ max8998_irq_table_type max8998_irq_table[ENDOFIRQ+1] = {
     NULL, // DONER
     NULL, // CHGRSTF
     NULL, // DCINOVPR
-    NULL,	// maxim_charging_topoff, // TOPOFFR	// hanapark_Atlas
+    maxim_charging_topoff, // TOPOFFR
     NULL, // ONKEY1S
     maxim_low_battery_2nd, // LOBAT2
     maxim_low_battery_1st  // LOBAT1
@@ -1038,7 +1037,7 @@ boolean Set_MAX8998_PM_REG(max8998_pm_section_type reg_num, byte value)
     {
         // Error - Invalid register
         printk("Set_MAX8998_PM_REG Invalid register\n");
-	    return FALSE;
+	 return FALSE;
     }
 
     spin_lock(&pmic_access_lock);
@@ -1048,7 +1047,7 @@ boolean Set_MAX8998_PM_REG(max8998_pm_section_type reg_num, byte value)
         // Error - I2C read error
         spin_unlock(&pmic_access_lock);
         printk("Set_MAX8998_PM_REG Read failed\n");
-	    return FALSE; // return error
+	return FALSE; // return error
     }
 
     reg_buff = (reg_buff & max8998pm[reg_num].clear) | (value << max8998pm[reg_num].shift);
@@ -1218,8 +1217,8 @@ void Set_MAX8998_PM_ONOFF_CNTL(byte onoff_reg, byte cntl_item, byte status)
     }
     else
     {
-        // Error - this condition is not defined
-        return;
+      // Error - this condition is not defined
+      return;
     }
 
     spin_lock(&pmic_access_lock);
@@ -1823,7 +1822,7 @@ boolean Set_MAX8998_RTC_REG(max8998_rtc_section_type reg_num, byte value)
         // Write Vreg control failed
         return FALSE;
     }
-    
+
     return TRUE;
 }
 
@@ -2140,7 +2139,7 @@ irqreturn_t pmic_irq(int irq, void *dev_id)
 {
 	//wake_lock(&pmic_wake_lock);
 	wake_lock_timeout(&pmic_wake_lock, 2 * HZ);
-	disable_irq(PMIC_IRQ);
+	disable_irq_nosync(PMIC_IRQ); /* 2.6.32 kernel */
 
 	hrtimer_cancel(&charger_timer);
 	hrtimer_start(&charger_timer,
@@ -2150,7 +2149,7 @@ irqreturn_t pmic_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-irqreturn_t pmic_isr(void)
+void pmic_isr(struct work_struct *work)
 {	
 	maxim_batt_check();
 	MAX8998_PM_IRQ_isr();
@@ -2197,15 +2196,6 @@ void set_low_bat_interrupt(int on)
 			Set_MAX8998_PM_REG(ELBCNFG1, 1);
 		}
 		Set_MAX8998_PM_REG(ELBCNFG2, 1);
-
-		if (s3c_bat_is_in_call() == 1)	// hanapark_DF25
-		{
-			Set_MAX8998_PM_REG(LBTH2,0x3);	// 3.2V
-		}
-		else
-		{
-			Set_MAX8998_PM_REG(LBTH2,0x4);	// 3.3V
-		}
 	}
 	else
 	{
@@ -2245,23 +2235,24 @@ void MAX8998_IRQ_init(void)
 	// initialize the PMIC_IRQ
 	if(pmic_write(SLAVE_ADDR_PM, (byte)IRQ1_REG_M, irq_mask, (byte)4) != PMIC_PASS)
 	{
-	    // IRQ MASK aren't written.
-	     printk("Write IRQ Mask failed \n");
+		// IRQ MASK aren't written.
+		 printk("Write IRQ Mask failed \n");
 	}
 
-	s3c_gpio_setpull(GPIO_AP_PMIC_IRQ, S3C_GPIO_PULL_UP);
+	s3c_gpio_cfgpin(GPIO_AP_PMIC_IRQ, S3C_GPIO_SFN(GPIO_AP_PMIC_IRQ_AF));
+	s3c_gpio_setpull(GPIO_AP_PMIC_IRQ, S3C_GPIO_PULL_NONE);
 
 	set_irq_type(PMIC_IRQ, IRQ_TYPE_LEVEL_LOW);
 
 	pmic_int_wq = create_singlethread_workqueue("pmic_int_wq");
 	
 	if (!pmic_int_wq)
-		return -ENOMEM;
+		return;
 
 	Set_MAX8998_PM_REG(ENBATTMON, 1);
-	Set_MAX8998_PM_REG(LBTH1,0x5);	//7); // 3.57V
+	Set_MAX8998_PM_REG(LBTH1,0x7); // 3.57V
 	Set_MAX8998_PM_REG(LBHYST1,0x0);
-	Set_MAX8998_PM_REG(LBTH2,0x4);	//5); // 3.4V	
+	Set_MAX8998_PM_REG(LBTH2,0x5); // 3.4V	
 	Set_MAX8998_PM_REG(LBHYST2,0x0);
 	set_low_bat_interrupt(0);
 
@@ -2839,8 +2830,6 @@ void camera_ldo_control(unsigned char onoff)
 }
 
 extern int set_tsp_for_ta_detect(int state);
-extern int set_tsp_for_usb_detect(int state);
-
 void maxim_vac_connect(void)
 {
 	u8 UsbStatus=0;
@@ -2853,16 +2842,16 @@ void maxim_vac_connect(void)
 		{
 			UsbStatus = FSA9480_Get_I2C_USB_Status();
 			if(UsbStatus){
-			printk("[BATT] maxim_USB_connect~~~ \n");
+				//printk("maxim_USB_connect~~~ \n");
 				curent_device_type = PM_CHARGER_USB_INSERT;
-				set_tsp_for_usb_detect(1);
 			}
 			else{
-			printk("[BATT] maxim_TA_connect~~~ \n");
+				//printk("maxim_TA_connect~~~ \n");
 				curent_device_type = PM_CHARGER_TA;
 				MicroTAstatus = 1;
-				set_tsp_for_ta_detect(1);
 			}
+			
+			set_tsp_for_ta_detect(1);
 			s3c_cable_changed();
 		}
 	}
@@ -2874,7 +2863,7 @@ void maxim_vac_connect(void)
 
 void maxim_vac_disconnect(void)
 {
-	printk("[BATT] %s \n", __func__);
+	//printk("maxim_vac_disconnect \n");
 	if(!Get_MAX8998_PM_REG(VDCINOK_status))
 	{
 		if(charging_mode_get())
@@ -2884,15 +2873,11 @@ void maxim_vac_disconnect(void)
 			//	pm_power_off();
 		}	
 
-		if(curent_device_type == PM_CHARGER_TA)
-			set_tsp_for_ta_detect(0);
-		else if (curent_device_type == PM_CHARGER_USB_INSERT)
-			set_tsp_for_usb_detect(0);
-		
+		set_tsp_for_ta_detect(0);
 
 		MicroTAstatus = 0;
-		s3c_cable_changed();
 		curent_device_type = PM_CHARGER_NULL;
+		s3c_cable_changed();
 		
 		low_bat1_int_status=0;
 	}
@@ -2957,18 +2942,21 @@ unsigned char maxim_chg_status(void)
 {
 	if(Get_MAX8998_PM_REG(VDCINOK_status)){
 		if(FSA9480_Get_I2C_USB_Status()){
-			printk("maxim_USB_connect~~~ \n");
+			//printk("maxim_USB_connect~~~ \n");
 			curent_device_type = PM_CHARGER_USB_INSERT;
 		}
 		else{
-			printk("maxim_TA_connect~~~ \n");
+			//printk("maxim_TA_connect~~~ \n");
 			curent_device_type = PM_CHARGER_TA;
 			MicroTAstatus = 1;
 		}
 		return 1;
 	}
 	else
-		return 0;  
+	{
+		curent_device_type = PM_CHARGER_NULL;
+		return 0;
+	}
 }
 
 unsigned char maxim_lpm_chg_status(void)
@@ -3033,65 +3021,56 @@ unsigned int max8998_poweron_reason(void)
 
 extern int  FSA9480_PMIC_CP_USB(void);
 extern int askonstatus;
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-extern void kernel_sec_clear_upload_magic_number(void);	// hanapark_DF01
-extern void kernel_sec_set_upload_magic_number(void);	// hanapark_DF01
-#endif
-void charging_stop_without_magic_number(void)	// hanapark_DF01
-{
-	Set_MAX8998_PM_REG(CHGENB, 0x1);	// discharge
-}
-	
-void maxim_charging_control(unsigned int dev_type  , unsigned int cmd)
+extern int mtp_mode_on;
+
+void maxim_charging_control(unsigned int dev_type  , unsigned int cmd, int uicharging)
 {
 	byte reg_buff[2];
 	int value;
 	
 	if(!cmd) //disable
 	{
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-		kernel_sec_set_upload_magic_number();	// hanapark_DF01
-#endif
 		Set_MAX8998_PM_REG(CHGENB, 0x1); //disable charge
-		printk("%s: charging disable \n",__func__);
+		//printk("%s charging disable \n",__func__);
 	}
 	else if(dev_type==PM_CHARGER_TA)
 	{
-		// hanapark_Atlas (TOPOFF = 10%; 2010.05.10)
-		reg_buff[0] = (0x0 <<5) |(0x3 << 3) |(0x5<<0) ; // CHG_TOPOFF_TH=10%, CHG_RST_HYS=Disable, AC_FCGH=600mA
-		reg_buff[1] = (0x2<<6) |(0x3<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 10, FCHG_TMR=disable, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-		kernel_sec_clear_upload_magic_number();	// hanapark_DF01
-#endif
+		if(uicharging)
+			reg_buff[0] = (0x0 <<5) |(0x3 << 3) |(0x5<<0) ; // CHG_TOPOFF_TH=10%, CHG_RST_HYS=disable, AC_FCGH= 600mA
+		else
+			reg_buff[0] = (0x2 <<5) |(0x3 << 3) |(0x5<<0) ; // CHG_TOPOFF_TH=20%, CHG_RST_HYS=disable, AC_FCGH= 600mA
+		reg_buff[1] = (0x2<<6) |(0x2<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 10, FCHG_TMR=7Hr, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
 		Set_MAX8998_PM_ADDR(CHGR1, reg_buff, 2); 
-		printk("%s: TA charging enable \n",__func__);
+		//printk("%s TA charging enable \n",__func__);
 	}
 	else if(dev_type==PM_CHARGER_USB_INSERT)
 	{	
 		value = FSA9480_PMIC_CP_USB();
-		// hanapark_Atlas (TOPOFF = 10%; 2010.05.10)
-		reg_buff[0] = (0x0 <<5) |(0x3 << 3) |(0x1<<0) ; // CHG_TOPOFF_TH=10%, CHG_RST_HYS=Disable, AC_FCGH=380mA
-		if(value){
-			if (askonstatus)
-			reg_buff[1] = (0x1<<6) |(0x3<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 01, FCHG_TMR=disable, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
-			else
-			reg_buff[1] = (0x2<<6) |(0x3<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 10, FCHG_TMR=disable, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
+		if(uicharging)
+			reg_buff[0] = (0x3<<5) |(0x3 << 3) |(0x2<<0) ; // CHG_TOPOFF_TH=25%, CHG_RST_HYS=disable, AC_FCGH= 475mA
+		else
+			reg_buff[0] = (0x4 <<5) |(0x3 << 3) |(0x2<<0) ; // CHG_TOPOFF_TH=30%, CHG_RST_HYS=disable, AC_FCGH= 475mA
+		if(value)
+		{
+			if (askonstatus||mtp_mode_on){
+				reg_buff[1] = (0x1<<6) |(0x2<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 01, FCHG_TMR=7Hr, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
+				printk("[Max8998_function]AP USB Power OFF, askon: %d, mtp : %d\n",askonstatus,mtp_mode_on);
+				}
+			else{
+				reg_buff[1] = (0x2<<6) |(0x2<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 10, FCHG_TMR=7Hr, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
+				printk("[Max8998_function]AP USB Power ON, askon: %d, mtp : %d\n",askonstatus,mtp_mode_on);
+				}
 		}
 		else
-			reg_buff[1] = (0x2<<5) |(0x3<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 01, FCHG_TMR=disable, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-		kernel_sec_clear_upload_magic_number();	// hanapark_DF01
-#endif
+			reg_buff[1] = (0x2<<5) |(0x2<<4) | (0x0<<3) | (0x0<<1) | (0x0<<0); //ESAFEOUT1,2= 01, FCHG_TMR=7Hr, MBAT_REG_TH=4.2V, MBATT_THERM_REG=105C
+			
 		Set_MAX8998_PM_ADDR(CHGR1, reg_buff, 2); 
-		printk("%s: USB charging enable \n",__func__);
+		//printk("%s USB charging enable \n",__func__);
 	}
 	else
 	{
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-		kernel_sec_set_upload_magic_number();	// hanapark_DF01
-#endif
 		Set_MAX8998_PM_REG(CHGENB, 0x1); //disable charge
-		printk("%s: charging disable \n",__func__);
+		//printk("%s charging disable \n",__func__);
 	}
 }
 

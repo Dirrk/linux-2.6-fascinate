@@ -40,10 +40,14 @@
 #include <linux/kref.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/usb.h>
 #include <linux/usb_usual.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/gadget.h>
+
+#include <linux/sched.h>
+#include <asm-generic/siginfo.h>
 
 #include "f_mtp.h"
 #include "gadget_chips.h"
@@ -98,11 +102,10 @@
 
 static const char longname[] = 	"Gadget_MTP";
 static const char shortname[] = DRIVER_NAME;
-static const char enable_shortname[] = "usb_mtp_enable";//Vova: name for MTP enable device
-static int mtp_pid=-1; 
+static int mtp_pid; 
 typedef enum {
-mtp_disable_desc,
-mtp_enable_desc
+mtp_disable_desc = 0, //0
+mtp_enable_desc	  //1
 };
 
 /* MTP Device Structure*/
@@ -135,7 +138,6 @@ struct mtpg_dev {
 	atomic_t 		write_excl;
 	atomic_t 		ioctl_excl;
 	atomic_t 		open_excl;
-	atomic_t 		open_enable_excl;	
 	atomic_t 		wintfd_excl;
 	char cancel_io_buf[USB_PTPREQUEST_CANCELIO_SIZE+1]; 
 
@@ -328,10 +330,7 @@ static int mtp_send_signal(int value)
 	info.si_code = SI_QUEUE;
 	info.si_int = value;
 	rcu_read_lock();
-	if(mtp_pid == -1)
-	    t = NULL;
-	else
-	    t = find_task_by_vpid(mtp_pid);
+	t = find_task_by_vpid(mtp_pid);
 	if(t == NULL){
 		printk("no such pid\n");
 		rcu_read_unlock();
@@ -630,6 +629,7 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 	int status = 0; 
 	int size = 0;
 	int ret_value = 0;
+	int max_pkt = 0;
 
 	char *buf_ptr = NULL;
 	char buf[USB_PTPREQUEST_GETSTATUS_SIZE+1] = {0};
@@ -641,19 +641,24 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 			DEBUG_MTPB("[%s]\tline[%d] MTP_ACM_ENABLE \n", __func__,__LINE__);
 //			mtp_enable();
 			break;
-#if 0 //Vova: this handled through MTP enable device
+
 		case MTP_ONLY_ENABLE:
-			//mtp_function_enable(mtp_enable_desc);
+			printk("[%s:%d] calling mtp_function_enable with %d \n",__func__,__LINE__,mtp_enable_desc);
+			mtp_function_enable(mtp_enable_desc);
+
 			DEBUG_MTPB("[%s] \tline [%d] MTP_ONLY_ENABLE \n", __func__,__LINE__);
 
 			if (dev->cdev && dev->cdev->gadget )
 			{			
-				DEBUG_MTPB("[%s] B4 disconnecting gadget\tline = [%d] \n", __func__,__LINE__);
+				printk("[%s] B4 disconnecting gadget\tline = [%d] \n", __func__,__LINE__);
 				usb_gadget_disconnect(dev->cdev->gadget);
-				DEBUG_MTPB("[%s] \tline = [%d] \n", __func__,__LINE__);
+				printk("[%s] \tline = [%d] calling usb_gadget_connect after msleep of 5 \n", __func__,__LINE__);
 				msleep(5);
 				usb_gadget_connect(dev->cdev->gadget);
 			}
+			status = 10;
+			printk("[%s]  [%d] MTP_ONLY_ENABLE ioctl and clearing the error = 0 \n", __func__,__LINE__);
+			the_mtpg->error = 0;
 			break;
 
 		case MTP_DISABLE:
@@ -668,7 +673,7 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 			}
 
 			break;
-#endif
+
 		case MTP_CLEAR_HALT:
 			status = usb_ep_clear_halt (dev->bulk_in);
 			status = usb_ep_clear_halt (dev->bulk_out);
@@ -698,7 +703,7 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 			break;
 		case SET_SETUP_DATA:
 			buf_ptr = (char *)arg;
-			copy_from_user(buf, buf_ptr, USB_PTPREQUEST_GETSTATUS_SIZE_SMALL);//USB_PTPREQUEST_GETSTATUS_SIZE);
+			copy_from_user(buf, buf_ptr, USB_PTPREQUEST_GETSTATUS_SIZE);
 			size = buf[0];
 			DEBUG_MTPB("[%s] SET_SETUP_DATA; data size = %d\tline = [%d] \n", __func__,size,__LINE__); 
 			memcpy(req->buf, buf, size);
@@ -708,12 +713,34 @@ static long  mtpg_ioctl(struct file *fd, unsigned int code, unsigned long arg)
 			if (status < 0)
 					DEBUG_MTPB("[%s] Error at usb_ep_queue\tline = [%d] \n", __func__,__LINE__); 
 			break;
+		case SET_ZLP_DATA:
+			req->zero = 1;
+			req->length = 0;
+			printk("[%s] SEND_ZLP_DATA and usb_ep_queu 0 data size = %d\tline = [%d] \n", __func__,size,__LINE__);
+			status = usb_ep_queue(dev->bulk_in, req, GFP_ATOMIC);
+			if (status < 0) {
+				printk("[%s] Error at usb_ep_queue\tline = [%d] \n", __func__,__LINE__); 
+			} else {
+				printk("[%s] usb_ep_queue passed and status = %d\tline = [%d] \n", __func__,__LINE__,status); 
+				status =20;
+			}
+			break;
+		case GET_HIGH_FULL_SPEED:
+			printk("[%s] GET_HIGH_FULL_SPEED and \tline = [%d] \n", __func__,__LINE__);
+			max_pkt = dev->bulk_in->maxpacket;
+			printk("[%s]  line = %d max_pkt = [%d] \n", __func__,__LINE__, max_pkt); 
+			if(max_pkt == 64)
+				status = 64;
+			else
+				status =512;
+			break;
 			
 		default:
 			status = -ENOTTY;
 	}
 
 	DEBUG_MTPB("[%s] \tline = [%d] ioctl code %d\n", __func__,__LINE__,code);
+
 	return status;
 }
 
@@ -742,79 +769,6 @@ static struct miscdevice mtpg_device = {
 	.name = shortname,
 	.fops = &mtpg_fops,
 };
-
-//Vova: MTP enable device
-static int mtpg_enable_open(struct inode *ip, struct file *fp)
-{
-	DEBUG_MTPB("[%s] \tline = [%d] \n", __func__,__LINE__);
-
-	if (_lock(&the_mtpg->open_enable_excl)){
-		printk("mtpg_enable_open fn -- mtpg enable device busy\n");
-		return -EBUSY;
-	}
-	
-	fp->private_data = the_mtpg;
-
-	return 0;
-}
-
-int set_usb_mtp_mode(bool);
-	
-static long  mtpg_enable_ioctl(struct file *fd, unsigned int code, unsigned long arg)
-{
-	int status = 0; 
-	struct mtpg_dev *dev = the_mtpg;
-
-	DEBUG_MTPB("[%s] \tline = [%d] \n", __func__,__LINE__);
-
-	if(!dev) {
-		printk("MTP device is not initialized\n");
-		return -ENODEV;
-	}
-	
-	switch (code) {
-		case MTP_ENABLE:
-			DEBUG_MTPB("[%s] \tline [%d] MTP ENABLE \n", __func__,__LINE__);
-			status = set_usb_mtp_mode(true);		
-			break;
-
-		case MTP_DISABLE:
-			DEBUG_MTPB("[%s] \tline [%d] MTP DISABLE \n", __func__,__LINE__);
-			status = set_usb_mtp_mode(false);
-			break;		
-			
-		default:
-			status = -ENOTTY;
-	}
-
-	DEBUG_MTPB("[%s] \tline = [%d] ioctl code %d\n", __func__,__LINE__,code);
-
-	return status;
-}
-
-static int mtpg_enable_release_device(struct inode *ip, struct file *fp)
-{
-	DEBUG_MTPB("[%s] \tline = [%d] \n", __func__,__LINE__);
-	
-	if(the_mtpg != NULL)
-		_unlock(&the_mtpg->open_enable_excl);
-	
-	return 0;
-}
-
-static struct file_operations mtpg_enable_fops = {
-	.owner   = THIS_MODULE,
-	.open    = mtpg_enable_open,
-	.unlocked_ioctl = mtpg_enable_ioctl,
-	.release = mtpg_enable_release_device,
-};
-
-static struct miscdevice mtpg_enable_device = {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = enable_shortname,
-	.fops = &mtpg_enable_fops,
-};
-//Vova: MTP enable device
 
 struct usb_request *alloc_ep_req(struct usb_ep *ep, unsigned len, gfp_t kmalloc_flags) 
 {
@@ -916,7 +870,6 @@ static void mtpg_function_unbind(struct usb_configuration *c, struct usb_functio
 	dev->error = 1;
 	spin_unlock_irq(&dev->lock);
 
-	misc_deregister(&mtpg_enable_device);
 	misc_deregister(&mtpg_device);
 	kfree(the_mtpg);
 	the_mtpg = NULL;
@@ -1002,6 +955,7 @@ static int __init mtpg_function_bind(struct usb_configuration *c, struct usb_fun
 	if (gadget_is_dualspeed(cdev->gadget)) {
 
 		DEBUG_MTPB("[%s] \tdual speed line = [%d] \n", __func__,__LINE__); 
+		printk("[%s] \tdual speed line = [%d] \n", __func__,__LINE__); 
 
 		/* Assume endpoint addresses are the same for both speeds */
 		hs_mtpg_in_desc.bEndpointAddress =
@@ -1018,7 +972,8 @@ static int __init mtpg_function_bind(struct usb_configuration *c, struct usb_fun
 	the_mtpg->cdev = cdev;
 
 	/*This is required for intializing Descriptors to NULL*/
-	//mtp_function_enable(0);
+	printk("***** [%s:%d] calling mtp_function_enable with %d \n",__func__,__LINE__,mtp_disable_desc);
+	mtp_function_enable(mtp_disable_desc);
 
 	return 0;
 
@@ -1029,9 +984,6 @@ out:
 	mtpg_function_unbind(c, f);
 	return rc;
 }
-
-// Vova: we need to check is the cable really connected
-extern u8 FSA9480_Get_USB_Status(void);
 
 static int mtpg_function_set_alt(struct usb_function *f,
 		unsigned intf, unsigned alt)
@@ -1079,14 +1031,7 @@ static int mtpg_function_set_alt(struct usb_function *f,
 	dev->bulk_out->driver_data = dev;
 
 	dev->online = 1;
-	dev->error = 0;
 
-    //if( FSA9480_Get_USB_Status() ) 
-    {
-        // Vova: send Cable connected signal
-        mtp_send_signal(USB_CABLE_CONNECTED);
-    }
-	
 	/* readers may be blocked waiting for us to go online */
 	wake_up(&dev->read_wq);
 
@@ -1102,12 +1047,6 @@ static void mtpg_function_disable(struct usb_function *f)
 
 	dev->online = 0;
 	dev->error = 1;
-
-    //if( !FSA9480_Get_USB_Status() ) 
-    {	
-        // Vova: send Cable disconnected signal
-        mtp_send_signal(USB_CABLE_DISCONNECTED);
-    }
 	
 	usb_ep_disable(dev->int_in);
 	dev->int_in->driver_data = NULL;
@@ -1242,7 +1181,6 @@ int __init mtp_function_add(struct usb_configuration *c)
 	atomic_set(&mtpg->read_excl, 0);
 	atomic_set(&mtpg->write_excl, 0);
 	atomic_set(&mtpg->wintfd_excl, 0);
-	atomic_set(&mtpg->open_enable_excl, 0);
 
 	INIT_LIST_HEAD(&mtpg->rx_idle);
 	INIT_LIST_HEAD(&mtpg->rx_done);
@@ -1251,7 +1189,7 @@ int __init mtp_function_add(struct usb_configuration *c)
 	mtpg->function.name = longname;	
 	mtpg->function.strings = dev_strings;
 //Test the switch
-#if 1
+#if 0
 	mtpg->function.descriptors = fs_mtpg_desc;
 	mtpg->function.hs_descriptors = hs_mtpg_desc;
 #else
@@ -1272,11 +1210,7 @@ int __init mtp_function_add(struct usb_configuration *c)
 		printk("Error in misc_register of mtpg_device Failed !!!\n");
 		goto err_misc_register;
 	}
-	rc = misc_register(&mtpg_enable_device);
-	if (rc != 0){
-		printk("Error in misc_register of mtpg_enable_device Failed !!!\n");
-		goto err_misc_enable_register;
-	}	
+	
 	rc = usb_add_function(c, &mtpg->function);
 	if (rc != 0){
 		printk("Error in usb_add_function Failed !!!\n");
@@ -1286,9 +1220,6 @@ int __init mtp_function_add(struct usb_configuration *c)
 	return 0;
 
 err_usb_add_function:
-	misc_deregister(&mtpg_enable_device);
-	
-err_misc_enable_register:		
 	misc_deregister(&mtpg_device);
 
 err_misc_register:
@@ -1318,6 +1249,29 @@ int mtp_function_config_changed(struct usb_composite_dev *cdev,	struct usb_confi
 
 	mtpg_interface_desc.bInterfaceNumber = status;
 	return 0;
+}
+
+void mtp_function_enable(int enable)
+{
+        struct mtpg_dev *dev = the_mtpg;
+
+        if (dev) {
+                printk("[%s] mtp_function => (%s)\n", __func__,
+                        enable ? "enabled" : "disabled");
+
+                if (enable) {
+                        printk("****** %s and line %d fs and hs desc \n",__FUNCTION__,__LINE__);
+                        dev->function.descriptors = fs_mtpg_desc;
+                        dev->function.hs_descriptors = hs_mtpg_desc;
+                } else {
+                        printk("****** %s and line %d null_desc \n",__FUNCTION__,__LINE__);
+                        dev->function.descriptors = null_mtpg_descs;
+                        dev->function.hs_descriptors = null_mtpg_descs;
+                }
+        }
+        else {
+                printk("[%s] dev does not exist\n", __func__);
+        }
 }
 
 MODULE_AUTHOR("Deepak And Madhukar");

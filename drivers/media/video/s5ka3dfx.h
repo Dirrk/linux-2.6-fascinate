@@ -1078,12 +1078,13 @@ static unsigned char s5ka3dfx_init_vt_reg[][2] = {
 /*
  * EV bias
  */
+#if 0	/* unused variables */
 static unsigned char s5ka3dfx_ev_m5[][2] = {	
 {0xef, 0x03},
 {0x31, 0xb0},
 {0x32, 0x98},
 };
-
+#endif	/* unused variables */
 static unsigned char s5ka3dfx_ev_m4[][2] = {	
 {0xef, 0x03},
 {0x31, 0xa0},
@@ -1137,22 +1138,23 @@ static unsigned char s5ka3dfx_ev_p4[][2] = {
 {0x31, 0x28},
 {0x32, 0x40},
 };
-
+#if 0	/* unused variables */
 static unsigned char s5ka3dfx_ev_p5[][2] = {	
 {0xef, 0x03},
 {0x31, 0x30},
 {0x32, 0x48},
 };
-
+#endif	/* unused variables */
 /*
  * EV bias for VT
  */
+#if 0	/* unused variables */
 static unsigned char s5ka3dfx_ev_vt_m5[][2] = {	
 {0xef, 0x03},
 {0x31, 0xa9},
 {0x32, 0xa4},
 };
-
+#endif	/* unused variables */
 static unsigned char s5ka3dfx_ev_vt_m4[][2] = {	
 {0xef, 0x03},
 {0x31, 0x99},
@@ -1206,13 +1208,13 @@ static unsigned char s5ka3dfx_ev_vt_p4[][2] = {
 {0x31, 0x2a},
 {0x32, 0x3e},
 };
-
+#if 0	/* unused variables */
 static unsigned char s5ka3dfx_ev_vt_p5[][2] = {	
 {0xef, 0x03},
 {0x31, 0x32},
 {0x32, 0x46},
 };
-
+#endif	/* unused variables */
 /************** White Balance Setting ******************/
 static unsigned char s5ka3dfx_wb_auto[][2] = {	
 {0xef, 0x03},

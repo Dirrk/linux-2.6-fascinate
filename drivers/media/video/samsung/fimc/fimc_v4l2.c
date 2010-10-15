@@ -1,9 +1,9 @@
-/* linux/drivers/media/video/samsung/fimc_v4l2.c
+/* linux/drivers/media/video/samsung/fimc/fimc_v4l2.c
+ *
+ * Copyright (c) 2010 Samsung Electronics Co., Ltd.
+ *		http://www.samsung.com/
  *
  * V4L2 interface support file for Samsung Camera Interface (FIMC) driver
- *
- * Jonghun Han, Copyright (c) 2009 Samsung Electronics
- * 	http://www.samsungsemi.com/
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -19,31 +19,32 @@
 #include <linux/videodev2_samsung.h>
 #include <media/v4l2-ioctl.h>
 #include <plat/fimc.h>
+#include <linux/clk.h>
 
 #include "fimc.h"
 
 static int fimc_querycap(struct file *filp, void *fh,
-					struct v4l2_capability *cap)
+			 struct v4l2_capability *cap)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 
-	dev_info(ctrl->dev, "%s: called\n", __func__);
+	fimc_info1("%s: called\n", __func__);
 
 	strcpy(cap->driver, "Samsung FIMC Driver");
 	strlcpy(cap->card, ctrl->vd->name, sizeof(cap->card));
 	sprintf(cap->bus_info, "FIMC AHB-bus");
 
 	cap->version = 0;
-	cap->capabilities = (V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT | \
+	cap->capabilities = (V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT |
 				V4L2_CAP_VIDEO_OVERLAY | V4L2_CAP_STREAMING);
 
 	return 0;
 }
 
 static int fimc_reqbufs(struct file *filp, void *fh,
-				struct v4l2_requestbuffers *b)
+			struct v4l2_requestbuffers *b)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -51,8 +52,8 @@ static int fimc_reqbufs(struct file *filp, void *fh,
 	} else if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_reqbufs_output(fh, b);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -61,7 +62,7 @@ static int fimc_reqbufs(struct file *filp, void *fh,
 
 static int fimc_querybuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -69,8 +70,8 @@ static int fimc_querybuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 	} else if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_querybuf_output(fh, b);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -79,7 +80,7 @@ static int fimc_querybuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 
 static int fimc_g_ctrl(struct file *filp, void *fh, struct v4l2_control *c)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (ctrl->cap != NULL) {
@@ -87,7 +88,7 @@ static int fimc_g_ctrl(struct file *filp, void *fh, struct v4l2_control *c)
 	} else if (ctrl->out != NULL) {
 		ret = fimc_g_ctrl_output(fh, c);
 	} else {
-		dev_err(ctrl->dev, "%s: Invalid case\n", __func__);
+		fimc_err("%s: Invalid case\n", __func__);
 		return -EINVAL;
 	}
 
@@ -96,15 +97,15 @@ static int fimc_g_ctrl(struct file *filp, void *fh, struct v4l2_control *c)
 
 static int fimc_s_ctrl(struct file *filp, void *fh, struct v4l2_control *c)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (ctrl->cap != NULL) {
 		ret = fimc_s_ctrl_capture(fh, c);
 	} else if (ctrl->out != NULL) {
-		ret = fimc_s_ctrl_output(fh, c);
+		ret = fimc_s_ctrl_output(filp, fh, c);
 	} else {
-		dev_err(ctrl->dev, "%s: Invalid case\n", __func__);
+		fimc_err("%s: Invalid case\n", __func__);
 		return -EINVAL;
 	}
 
@@ -113,16 +114,24 @@ static int fimc_s_ctrl(struct file *filp, void *fh, struct v4l2_control *c)
 
 static int fimc_s_ext_ctrls(struct file *filp, void *fh, struct v4l2_ext_controls *c)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
-	ret = fimc_s_ext_ctrls_capture(fh, c->controls);
+
+	if (ctrl->cap != NULL) {
+		ret = fimc_s_ext_ctrls_capture(fh, c);
+	} else if (ctrl->out != NULL) {
+		/* How about "ret = fimc_s_ext_ctrls_output(fh, c);"? */
+	} else {
+		fimc_err("%s: Invalid case\n", __func__);
+		return -EINVAL;
+	}
 
 	return ret;
 }
 
 static int fimc_cropcap(struct file *filp, void *fh, struct v4l2_cropcap *a)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (a->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -130,8 +139,8 @@ static int fimc_cropcap(struct file *filp, void *fh, struct v4l2_cropcap *a)
 	} else if (a->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_cropcap_output(fh, a);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -140,14 +149,16 @@ static int fimc_cropcap(struct file *filp, void *fh, struct v4l2_cropcap *a)
 
 static int fimc_g_crop(struct file *filp, void *fh, struct v4l2_crop *a)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (a->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
 		ret = fimc_g_crop_capture(fh, a);
+	} else if (a->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
+		ret = fimc_g_crop_output(fh, a);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -156,7 +167,7 @@ static int fimc_g_crop(struct file *filp, void *fh, struct v4l2_crop *a)
 
 static int fimc_s_crop(struct file *filp, void *fh, struct v4l2_crop *a)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (a->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -164,8 +175,8 @@ static int fimc_s_crop(struct file *filp, void *fh, struct v4l2_crop *a)
 	} else if (a->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_s_crop_output(fh, a);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -174,16 +185,19 @@ static int fimc_s_crop(struct file *filp, void *fh, struct v4l2_crop *a)
 
 static int fimc_streamon(struct file *filp, void *fh, enum v4l2_buf_type i)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	struct s3c_platform_fimc *pdata;
 	int ret = -1;
+
+	pdata = to_fimc_plat(ctrl->dev);
 
 	if (i == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
 		ret = fimc_streamon_capture(fh);
 	} else if (i == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_streamon_output(fh);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -192,16 +206,19 @@ static int fimc_streamon(struct file *filp, void *fh, enum v4l2_buf_type i)
 
 static int fimc_streamoff(struct file *filp, void *fh, enum v4l2_buf_type i)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
+	struct s3c_platform_fimc *pdata;
 	int ret = -1;
+
+	pdata = to_fimc_plat(ctrl->dev);
 
 	if (i == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
 		ret = fimc_streamoff_capture(fh);
 	} else if (i == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_streamoff_output(fh);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -210,7 +227,7 @@ static int fimc_streamoff(struct file *filp, void *fh, enum v4l2_buf_type i)
 
 static int fimc_qbuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -218,8 +235,8 @@ static int fimc_qbuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 	} else if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_qbuf_output(fh, b);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -228,7 +245,7 @@ static int fimc_qbuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 
 static int fimc_dqbuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 {
-	struct fimc_control *ctrl = (struct fimc_control *) fh;
+	struct fimc_control *ctrl = ((struct fimc_prv_data *)fh)->ctrl;
 	int ret = -1;
 
 	if (b->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -236,8 +253,8 @@ static int fimc_dqbuf(struct file *filp, void *fh, struct v4l2_buffer *b)
 	} else if (b->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
 		ret = fimc_dqbuf_output(fh, b);
 	} else {
-		dev_err(ctrl->dev, "V4L2_BUF_TYPE_VIDEO_CAPTURE and \
-			V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
+		fimc_err("V4L2_BUF_TYPE_VIDEO_CAPTURE and "
+			"V4L2_BUF_TYPE_VIDEO_OUTPUT are only supported\n");
 		ret = -EINVAL;
 	}
 
@@ -267,6 +284,8 @@ const struct v4l2_ioctl_ops fimc_v4l2_ops = {
 	.vidioc_s_input			= fimc_s_input,
 	.vidioc_g_parm			= fimc_g_parm,
 	.vidioc_s_parm			= fimc_s_parm,
+	.vidioc_queryctrl		= fimc_queryctrl,
+	.vidioc_querymenu		= fimc_querymenu,
 	.vidioc_g_fmt_vid_out		= fimc_g_fmt_vid_out,
 	.vidioc_s_fmt_vid_out		= fimc_s_fmt_vid_out,
 	.vidioc_try_fmt_vid_out		= fimc_try_fmt_vid_out,
@@ -276,4 +295,3 @@ const struct v4l2_ioctl_ops fimc_v4l2_ops = {
 	.vidioc_g_fmt_vid_overlay	= fimc_g_fmt_vid_overlay,
 	.vidioc_s_fmt_vid_overlay	= fimc_s_fmt_vid_overlay,
 };
-

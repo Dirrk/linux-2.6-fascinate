@@ -18,6 +18,7 @@
 /* #define VERBOSE_DEBUG */
 
 #include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/device.h>
 #include <linux/delay.h>
@@ -804,10 +805,16 @@ static int gs_open(struct tty_struct *tty, struct file *file)
 	port->open_count = 1;
 	port->openclose = false;
 
+#if defined(USB_G_SERIAL_LOW_LATENCY)
+	/* this setting make kernel bug below
+	  * BUG: sleeping function called from invalid context at kernel/mutex.c 
+	  */
+	  
 	/* low_latency means ldiscs work in tasklet context, without
 	 * needing a workqueue schedule ... easier to keep up.
 	 */
 	tty->low_latency = 1;
+#endif
 
 	/* if connected, start the I/O stream */
 	if (port->port_usb) {

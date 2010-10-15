@@ -60,12 +60,13 @@ struct gether {
 
 	u16				cdc_filter;
 
-	/* hooks for added framing, as needed for RNDIS and EEM.
-	 * we currently don't support multiple frames per SKB.
-	 */
+	/* hooks for added framing, as needed for RNDIS and EEM. */
 	u32				header_len;
-	struct sk_buff			*(*wrap)(struct sk_buff *skb);
-	int				(*unwrap)(struct sk_buff *skb);
+	struct sk_buff			*(*wrap)(struct gether *port,
+						struct sk_buff *skb);
+	int				(*unwrap)(struct gether *port,
+						struct sk_buff *skb,
+						struct sk_buff_head *list);
 
 	/* called on network open/close */
 	void				(*open)(struct gether *);

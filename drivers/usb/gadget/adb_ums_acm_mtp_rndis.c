@@ -40,12 +40,12 @@
 
 #include "f_mtp.h"
 #include "fsa9480_i2c.h"
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 #include "f_rndis.h"
 #include "u_ether.h"
+#endif
 #include "gadget_chips.h"
-
 #include <mach/max8998_function.h>
-#include "f_tool_launcher.h"
 
 MODULE_AUTHOR("SeungSoo Yange");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -59,13 +59,12 @@ static const char longname[] = "Gadget Android";
 /* if you want to use VTP function, please enable below Feature : VTP_MODE*/
 //#define VTP_MODE
 
-
 /* Default vendor and product IDs, overridden by platform data */
 #define VENDOR_ID		0x04e8	/* Samsung */
 //#define ADB_PRODUCT_ID 	0x6601	/* Swallowtail*/
 //#define ADB_PRODUCT_ID 	0x681C	/* S3C6410 Swallowtail*/
 #define KIES_PRODUCT_ID 	0x6877	/* S3C6410 Swallowtail*/
-#define MTP_PRODUCT_ID 	0x5A0f	/* S3C6410 Swallowtail*/
+#define MTP_PRODUCT_ID 	0x68A9	/* S3C6410 Swallowtail*/
 
 #define ADB_PRODUCT_ID 	0x681C	/* S3C6410 Swallowtail*/
 #define PRODUCT_ID		0x681D
@@ -74,12 +73,6 @@ static const char longname[] = "Gadget Android";
 #define RNDIS_PRODUCT_NUM	0xa4a2	/* Ethernet/RNDIS Gadget */
 #define CDC_VENDOR_NUM		0x0525	/* NetChip */
 #define CDC_PRODUCT_NUM		0xa4a1	/* Linux-USB Ethernet Gadget */
-
-#ifdef FEATURE_TOOL_LAUNCHER
-bool   g_bToolLauncherRun = false;//if true - TL is currently running
-int    g_adbEnabled = 0;// keep adb enable state before TL starting
-#endif //FEATURE_TOOL_LAUNCHER
-
 extern void ap_usb_power_on(int set_vaue);
 
 void get_usb_serial(char *usb_serial_number)
@@ -90,7 +83,7 @@ void get_usb_serial(char *usb_serial_number)
 	
 	serial_number = (system_serial_high << 16) + (system_serial_low >> 16);
 
-	sprintf(temp_serial_number,"I500%08x",serial_number);
+	sprintf(temp_serial_number,"1000%08x",serial_number);
 	strcpy(usb_serial_number,temp_serial_number);
 }
 
@@ -108,7 +101,9 @@ struct android_dev {
 
 	int product_id;
 	int adb_product_id;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	int rndis_product_id;
+#endif
 	int mtp_product_id;
     int kies_product_id;
 	int version;
@@ -149,8 +144,9 @@ static struct usb_gadget_strings *dev_strings[] = {
 	&stringtab_dev,
 	NULL,
 };
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 static u8 hostaddr[ETH_ALEN];
-
+#endif
 static struct usb_device_descriptor device_desc = {
 	.bLength              = sizeof(device_desc),
 	.bDescriptorType      = USB_DT_DEVICE,
@@ -234,13 +230,13 @@ static int __init android_bind_config(struct usb_configuration *c)
 		printk("[%s] Fail to mtp_function_add()\n", __func__);
 		return ret;
 	}	
-	
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	ret = rndis_bind_config(c, hostaddr);
 	if (ret) {
 		printk("[%s] Fail to rndis_bind_config()\n", __func__);
 		return ret;
 	}
-
+#endif
 #ifdef DM_PORT_ACTIVE
 	ret = dm_function_add(c);
 	if (ret) {
@@ -330,8 +326,12 @@ static int mtp_only_bind_config(struct usb_configuration *c)
 	int ret;
 
 	dev->cdev->desc.idProduct = __constant_cpu_to_le16(dev->mtp_product_id);
-	dev->cdev->desc.bDeviceClass	  = USB_CLASS_STILL_IMAGE;
-	dev->cdev->desc.bDeviceSubClass   = 0x06;
+	//dev->cdev->desc.bDeviceClass	  = USB_CLASS_STILL_IMAGE;
+	//dev->cdev->desc.bDeviceSubClass   = 0x06;
+	//dev->cdev->desc.bDeviceProtocol   = 0x01;
+
+	dev->cdev->desc.bDeviceClass	  = 0x00;
+	dev->cdev->desc.bDeviceSubClass   = 0x00;
 	dev->cdev->desc.bDeviceProtocol   = 0x01;
 	
 	ret = mtp_function_config_changed(dev->cdev, c);
@@ -341,7 +341,7 @@ static int mtp_only_bind_config(struct usb_configuration *c)
 	}
 	return ret;
 }
-
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 static int rndis_only_bind_config(struct usb_configuration *c)
 {
 	struct android_dev *dev = _android_dev;
@@ -359,37 +359,13 @@ static int rndis_only_bind_config(struct usb_configuration *c)
 	}
 	return ret;
 }
-
-#ifdef VODA
-static int acm_only_bind_config(struct usb_configuration *c)
-{
-	struct android_dev *dev = _android_dev;
-	int ret;
-
-	dev->cdev->desc.idProduct =	__constant_cpu_to_le16(dev->kies_product_id);
-	dev->cdev->desc.bDeviceClass	  = USB_CLASS_COMM;
-	dev->cdev->desc.bDeviceSubClass   = 0x00;
-	dev->cdev->desc.bDeviceProtocol   = 0x00;
-	
-	ret = acm_function_config_changed(dev->cdev, c);
-	if (ret) {
-		printk("[%s] Fail to acm_function_config_changed()\n", __func__);
-		return ret;
-	}
-	return ret;
-}
 #endif
-
 
 #define	ANDROID_DEBUG_CONFIG_STRING "ACM + UMS + ADB (Debugging mode)"
 #define	ANDROID_NO_DEBUG_KIES_CONFIG_STRING "ACM+MTP (No Debugging mode)"
 #define	ANDROID_NO_DEBUG_MTP_CONFIG_STRING "MTP Olny (No Debugging mode)"
 #define	ANDROID_NO_DEBUG_UMS_CONFIG_STRING "UMS Only (No debugging mode)"
 #define	ANDROID_NO_DEBUG_RNDIS_CONIFG_STRING "RNDIS Only (No debugging mode)"
-#ifdef VODA
-#define	ANDROID_NO_DEBUG_ACM_CONFIG_STRING "ACM Only (No debugging mode)"
-#endif
-
 
 static struct usb_configuration android_config  = {
 	.label		= ANDROID_NO_DEBUG_UMS_CONFIG_STRING,
@@ -430,7 +406,7 @@ static struct usb_configuration mtp_only_config  = {
 	.bmAttributes	= USB_CONFIG_ATT_ONE | USB_CONFIG_ATT_SELFPOWER,
 	.bMaxPower	= 0x30, /*  x2 = 160ma */
 };
-
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 static struct usb_configuration rndis_only_config  = {
 	.label		= ANDROID_NO_DEBUG_RNDIS_CONIFG_STRING,
 	.bind		= rndis_only_bind_config,
@@ -438,18 +414,7 @@ static struct usb_configuration rndis_only_config  = {
 	.bmAttributes	= USB_CONFIG_ATT_ONE | USB_CONFIG_ATT_SELFPOWER,
 	.bMaxPower	= 0x30, /*  x2 = 160ma */
 };
-
-#ifdef VODA
-static struct usb_configuration acm_only_config  = {
-	.label		= ANDROID_NO_DEBUG_ACM_CONFIG_STRING,
-	.bind		= acm_only_bind_config,
-	.bConfigurationValue = 7,
-	.bmAttributes	= USB_CONFIG_ATT_ONE | USB_CONFIG_ATT_SELFPOWER,
-	.bMaxPower	= 0x30, /*  x2 = 160ma */
-};
 #endif
-
-
 
 static int __init android_bind(struct usb_composite_dev *cdev)
 {
@@ -465,10 +430,10 @@ static int __init android_bind(struct usb_composite_dev *cdev)
 	/* Allocate string descriptor numbers ... note that string
 	 * contents can be overridden by the composite_dev glue.
 	 */
-
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	eth_device_desc.idVendor = cpu_to_le16(RNDIS_VENDOR_NUM);
 	eth_device_desc.idProduct = cpu_to_le16(RNDIS_PRODUCT_NUM);
-	
+#endif	
 	id = usb_string_id(cdev);
 	if (id < 0)
 		return id;
@@ -495,7 +460,9 @@ static int __init android_bind(struct usb_composite_dev *cdev)
 	printk("[ADB_UMS_ACM_RNDIS_MTP] string_dev = %s \n",strings_dev[STRING_SERIAL_IDX].s);
 
 	device_desc.iSerialNumber = id;
+	device_desc.bcdDevice = cpu_to_le16(0x0400);
 
+#if 0
 	gcnum = usb_gadget_controller_number(gadget);
 	if (gcnum >= 0)
 	{
@@ -513,18 +480,22 @@ static int __init android_bind(struct usb_composite_dev *cdev)
 			longname, gadget->name);
 		device_desc.bcdDevice = __constant_cpu_to_le16(0x9999);
 	}
+#endif
 	
 	if (gadget_is_otg(cdev->gadget)) 
 		android_config.descriptors = otg_desc;
-	
+
+// Fix: USBCV Ch9 RemoteWakeup Enable/Disable Test.
+#if 0	
 	if (gadget->ops->wakeup)
 		android_config.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
-
+#endif
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	/* set up network link layer */
 	status = gether_setup(cdev->gadget, hostaddr);
 	if (status < 0)
 		return status;
-
+#endif
 	/* register our configuration */
 	ret = usb_add_config(cdev, &android_config);
 	if (ret) {
@@ -543,9 +514,7 @@ static int __init android_bind(struct usb_composite_dev *cdev)
 
 #if ADB_ENABLE_AT_BOOT
 	printk("[%s] Enabling adb function at booting\n", __func__);
-	//Vova: enable_adb MTP change
-	//enable_adb(dev, USBSTATUS_ADB);
-	enable_adb(dev, 1);
+	enable_adb(dev, USBSTATUS_ADB);
 #endif
 
 	INFO(cdev, "%s, version: " DRIVER_VERSION "\n", DRIVER_DESC);
@@ -553,7 +522,9 @@ static int __init android_bind(struct usb_composite_dev *cdev)
 	return 0;
 	
 acm_fail:
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	gether_cleanup();
+#endif
 	return ret;
 }
 
@@ -576,12 +547,11 @@ static struct usb_composite_driver android_usb_driver = {
 };
 
 int currentusbstatus=0;
-int oldusbstatus=0;
+extern int oldusbstatus;
 int UmsCDEnable=0;
 int ums_mount_status = 0;
 int askonstatus = 0;
 int inaskonstatus=0;
-#if 0 //Vova: enable_adb MTP change
 static int prev_status_before_adb;  // previous USB setting before using ADB
 static int prev_enable_status;  // previous USB setting
 extern int mtp_mode_on;
@@ -599,10 +569,11 @@ static void enable_adb(struct android_dev *dev, int enable)
 			usb_gadget_disconnect(dev->cdev->gadget);
 		}
 askonstatus=0;
-oldusbstatus = currentusbstatus;
-currentusbstatus=enable;
 
 recheck:
+	oldusbstatus = currentusbstatus;
+	currentusbstatus=enable;
+	
 		ums_mount_status=0;
 
 		/* set product ID to the appropriate value */
@@ -633,6 +604,7 @@ recheck:
 			askonstatus=1;
 			dev->adb_enabled = enable;
 		}
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		else if(enable == USBSTATUS_VTP) 
 		{
 			printk("[enable_adb]USBSTATUS_VTP\n");
@@ -653,11 +625,11 @@ recheck:
 			dev->adb_enabled = enable;
 #endif
 		}
+#endif
 		else if(enable == USBSTATUS_UMS)
 		{
 			printk("[enable_adb]USBSTATUS_UMS\n");
 			mtp_mode_on = 0;
-//FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
 			UmsCDEnable=0;
 			if(prev_enable_status == USBSTATUS_ADB && prev_status_before_adb != USBSTATUS_UMS) {
 				printk("[USB] %s - prev_status(0x%02x), prev_status_before_adb setting(0x%02x)\n",
@@ -699,97 +671,9 @@ recheck:
            	}
 		}
 	}
-#else //Vova: enable_adb MTP change
-bool g_bMTP = false;
-extern int mtp_mode_on;
-#ifdef FEATURE_TOOL_LAUNCHER
-extern void set_user_usb_mode_setting(int);
-#endif //FEATURE_TOOL_LAUNCHER
-static void enable_adb(struct android_dev *dev, int enable)
-{
-	int ret;
-	DEBUG_TL("[enable_adb]: calling enable_adb, enable: %d, g_bMTP: %d \n", enable, g_bMTP);
 
-
-#ifdef FEATURE_TOOL_LAUNCHER
-	if(g_bToolLauncherRun){
-		// TL is running
-		// save adb mode
-		g_adbEnabled = enable;		
-		return;
-	}
-#else
-	/* mtp and adb states are the same, nothing to do */
-	if ((enable == dev->adb_enabled) && (g_bMTP == mtp_mode_on))
-		return;
-#endif //FEATURE_TOOL_LAUNCHER
-
-	if (dev->cdev && dev->cdev->gadget) {
-		usb_gadget_disconnect(dev->cdev->gadget);
-	}
-		
-	if (g_bMTP) {
-		/* MTP */		
-		ret = usb_change_config(dev->cdev, &mtp_only_config);
-        DEBUG_TL("[enable_adb]: mtp_only_config");
-		if (ret) {
-			printk("[%s] Fail to mtp_only_config()\n", __func__);
-		}	
-		UmsCDEnable=0;	
-	} else {
-		/* UMS */
-		if (enable) {				
-            DEBUG_TL("[enable_adb]: acm_ums_adb_config");
-			ret = usb_change_config(dev->cdev, &acm_ums_adb_config);
-			if (ret) {
-				printk("[%s] Fail to acm_ums_adb_config()\n", __func__);
-			}
-		} else {			
-			ret = usb_change_config(dev->cdev, &ums_only_config);
-			if (ret) {
-				printk("[%s] Fail to ums_only_config()\n", __func__);
-			}		
-		}
-		UmsCDEnable=1;
-	}
-	
-	mtp_mode_on = g_bMTP;
-	dev->adb_enabled = enable;	
-
-	/*
-	 * for reenumeration in case of booting-up connected with host
-	 * because if connected, host don't enumerate
-	*/
-	ap_usb_power_on(1);
-
-	if (dev->cdev && dev->cdev->gadget ) {
-        usb_gadget_connect(dev->cdev->gadget);
-    }    
-}   
-
-int set_usb_mtp_mode(bool mode)
-{
-	g_bMTP = mode;
-
-#ifdef FEATURE_TOOL_LAUNCHER
-	if(g_bToolLauncherRun){
-		// TL is running
-		// just save user mode
-    	if( g_bMTP==true){
-			set_user_usb_mode_setting(USBSTATUS_MTPONLY);
-    	}
-    	else{
-			set_user_usb_mode_setting(USBSTATUS_UMS);
-    	}	
-		return 0;
-	}
-#endif //FEATURE_TOOL_LAUNCHER
-
-	enable_adb(_android_dev, _android_dev->adb_enabled);	
-
-	return 0;
-}
-#endif //Vova: enable_adb MTP change
+extern int mtp_power_off;
+extern void UsbIndicator(u8 state);
 
 static void disable_mtp(struct android_dev *dev)
 {
@@ -804,100 +688,15 @@ static void disable_mtp(struct android_dev *dev)
 	ret = usb_change_config(dev->cdev, &acm_only_config);
 #else
 	ap_usb_power_on(0);
+	mtp_power_off = 1;
+	UsbIndicator(0);
+
 #endif
 
 	if (dev->cdev && dev->cdev->gadget ) {
 		 usb_gadget_connect(dev->cdev->gadget);
 		}
 }
-extern void UsbIndicator(u8 state);
-
-#ifdef FEATURE_TOOL_LAUNCHER
-
-/*
-* Function name: void set_tool_launcher_mode()
-* Function: Sets the device as a UMS device and keep the previous mode
-* Comment: 
-*/	
-void set_tool_launcher_mode()
-{
-	g_adbEnabled = _android_dev->adb_enabled;
-	_android_dev->adb_enabled = 0;
-
-	if(g_bMTP == true) {
-      set_user_usb_mode_setting(USBSTATUS_MTPONLY);
-    }
-    else {
-      set_user_usb_mode_setting(USBSTATUS_UMS);	
-    }
-	set_usb_mtp_mode(false);
-	g_bToolLauncherRun = true;
-}
-
-
-
-#define SWITCH_PDA			1
-#define SWITCH_MODEM		2
-extern void usb_switch_mode(int sel);
-extern void s3c_udc_soft_disconnect(void);
-extern void s3c_udc_soft_connect(void);
-extern int is_original_setting_modem(void);
-/*
-* Function name: int usb_switch_usb_mode_tool_launcher(int mode)
-* Function: Switch the device mode to the mode denoted by parameter "mode"
-* Comment: 
-*/
-int usb_switch_usb_mode_tool_launcher(int mode)
-{
-    DEBUG_TL("Switching USB mode to original. mode = %d\n", mode);
-
-	g_bToolLauncherRun = false;
-	_android_dev->adb_enabled = g_adbEnabled;
-
-    if(mode == -1)
-    {
-        usb_switch_mode(SWITCH_MODEM);
-    }
-    else if(is_original_setting_modem)
-    {
-        usb_switch_mode(SWITCH_MODEM);
-    }
-    else 
-    {		
-        if(mode ==USBSTATUS_SAMSUNG_KIES)
-        {   
-            enable_adb(_android_dev, 1);
-        }
-        else if(mode ==USBSTATUS_MTPONLY)
-        {
-			set_usb_mtp_mode(true);
-        }
-        else if(mode ==USBSTATUS_UMS)
-        {
-			//set_usb_mtp_mode(false);
-			enable_adb(_android_dev, 1);
-        }
-        else if(mode ==USBSTATUS_VTP)
-        {
-        }
-        else if(mode ==USBSTATUS_ASKON)
-        {
-        }
-        else
-        {
-            enable_adb(_android_dev, 1);
-        }
-		// Vova: disable it - this costs problem with enumeration
-        //usb_switch_mode(SWITCH_MODEM);
-        //usb_switch_mode(SWITCH_PDA);
-        s3c_udc_soft_disconnect();
-        s3c_udc_soft_connect();
-        
-    }
-	return 0;
-}
-
-#endif
 
 static void enable_askon(struct android_dev *dev, int enable)
 {
@@ -937,6 +736,7 @@ static void enable_askon(struct android_dev *dev, int enable)
 				printk("[%s] Fail to mtp_only_config()\n", __func__);
 			}
 		}
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		else if(enable == USBSTATUS_VTP) 
 		{
 			printk("[enable_askon]USBSTATUS_VTP\n");
@@ -952,12 +752,13 @@ static void enable_askon(struct android_dev *dev, int enable)
 #else
 		mtp_mode_on = 0;
 		UsbIndicator(1);
-             ret = usb_change_config(dev->cdev, &rndis_only_config);
+		ret = usb_change_config(dev->cdev, &rndis_only_config);
 			if (ret) {
 				printk("[%s] Fail to rndis_only_config()\n", __func__);
 			}
 #endif
 		}
+#endif
 		else if(enable == USBSTATUS_UMS)
 		{
 			printk("[enable_askon]USBSTATUS_UMS\n");
@@ -1000,9 +801,7 @@ static int adb_enable_open(struct inode *ip, struct file *fp)
 		return -EBUSY;
 	}
         printk(KERN_INFO "enabling adb\n");
-	//Vova: enable_adb MTP change
-	//enable_adb(_android_dev, USBSTATUS_ADB);
-	enable_adb(_android_dev, 1);
+	enable_adb(_android_dev, USBSTATUS_ADB);
 	atomic_dec(&adb_enable_excl);
 
 	return 0;
@@ -1033,8 +832,6 @@ int usb_mtp_select(int disable)
 
 int usb_switch_select(int enable)
 {
-	return 0;//Vova: this function is not used anymore
-	
 	if (atomic_inc_return(&adb_enable_excl) != 1) {
 	atomic_dec(&adb_enable_excl);
 	return -EBUSY;
@@ -1129,9 +926,10 @@ static int __init android_probe(struct platform_device *pdev)
 		if (pdata->kies_product_id)
 			dev->kies_product_id = pdata->kies_product_id;
 
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		if (pdata->rndis_product_id)
 			dev->rndis_product_id = pdata->rndis_product_id;
-
+#endif
 		if (pdata->version)
 			dev->version = pdata->version;
 
@@ -1167,8 +965,9 @@ static int __init init(void)
 	dev->adb_product_id = ADB_PRODUCT_ID;
 	dev->mtp_product_id = MTP_PRODUCT_ID;
 	dev->kies_product_id = KIES_PRODUCT_ID;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	dev->rndis_product_id = RNDIS_PRODUCT_ID;
-
+#endif
 	_android_dev = dev;
 
 	ret = platform_driver_register(&android_platform_driver);

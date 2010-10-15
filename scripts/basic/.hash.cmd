@@ -1,4 +1,4 @@
-cmd_scripts/basic/hash := gcc -Wp,-MD,scripts/basic/.hash.d -g -O2     -o scripts/basic/hash scripts/basic/hash.c  
+cmd_scripts/basic/hash := gcc -Wp,-MD,scripts/basic/.hash.d -g -O4     -o scripts/basic/hash scripts/basic/hash.c  
 
 deps_scripts/basic/hash := \
   scripts/basic/hash.c \

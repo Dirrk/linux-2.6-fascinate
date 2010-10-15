@@ -44,9 +44,16 @@
 #include <asm/uaccess.h>
 
 #include <plat/media.h>
+#ifdef CONFIG_CPU_FREQ
+#if defined(CONFIG_MACH_S5PC110_P1)
 #include <plat/s5pc11x-dvfs.h>
+#endif
+#if defined(CONFIG_MACH_S5PC110_ARIES)
+#include <mach/cpu-freq-v210.h>
+#endif
+#endif
 #ifdef CONFIG_PM_PWR_GATING
-#include <plat/regs-power.h>
+#include <mach/regs-power.h>
 #endif
 
 #ifdef CONFIG_S5PC11X_LPAUDIO
@@ -73,13 +80,20 @@ static int mfc_open(struct inode *inode, struct file *file)
 	int ret;
 	//struct sched_param param = { .sched_priority = 1 };
 
+	printk("%s(%d)\n", __func__, __LINE__);
+	
 	mutex_lock(&mfc_mutex);
 
 	
 	if (!mfc_is_running())
 	{
 #ifdef CONFIG_CPU_FREQ
-		s5pc110_lock_dvfs_high_level(DVFS_LOCK_TOKEN_1, 1);
+#if defined(CONFIG_MACH_S5PC110_P1)
+		s5pc110_lock_dvfs_high_level(DVFS_LOCK_TOKEN_1, 2); // DVFS Limit 200Mhz when mfc is running
+#endif
+#if defined(CONFIG_MACH_S5PC110_ARIES)
+		s5pc110_lock_dvfs_high_level(DVFS_LOCK_TOKEN_1, LEV_400MHZ);
+#endif // CONFIG_MACH_S5PC110_P1
 #endif
 #ifdef CONFIG_S5PC11X_LPAUDIO
 		s5pc110_set_lpaudio_lock(1);
@@ -505,8 +519,8 @@ static int mfc_mmap(struct file *filp, struct vm_area_struct *vma)
 	mfc_ctx = (mfc_inst_ctx *)filp->private_data;
 
 	firmware_size = mfc_get_port0_buff_paddr() - mfc_get_fw_buff_paddr();
-	phy_size = (unsigned long)(s3c_get_media_memsize(S3C_MDEV_MFC) - firmware_size
-			+ s3c_get_media_memsize_node(S3C_MDEV_MFC, 1));
+	phy_size = (unsigned long)(s3c_get_media_memsize_bank(S3C_MDEV_MFC, 0) - firmware_size
+			+ s3c_get_media_memsize_bank(S3C_MDEV_MFC, 1));
 
 	/* if memory size required from appl. mmap() is bigger than max data memory
 	 * size allocated in the driver */
@@ -621,7 +635,7 @@ static int mfc_probe(struct platform_device *pdev)
 	/*
 	 * buffer memory secure 
 	 */
-	mfc_port0_base_paddr = s3c_get_media_memory(S3C_MDEV_MFC);
+	mfc_port0_base_paddr = s3c_get_media_memory_bank(S3C_MDEV_MFC, 0);
 	mfc_port0_base_paddr = ALIGN_TO_128KB(mfc_port0_base_paddr);
 	mfc_port0_base_vaddr = phys_to_virt(mfc_port0_base_paddr);
 
@@ -632,7 +646,7 @@ static int mfc_probe(struct platform_device *pdev)
 		goto probe_out;
 	}
 
-	mfc_port1_base_paddr = s3c_get_media_memory_node(S3C_MDEV_MFC, 1);
+	mfc_port1_base_paddr = s3c_get_media_memory_bank(S3C_MDEV_MFC, 1);
 	mfc_port1_base_paddr = ALIGN_TO_128KB(mfc_port1_base_paddr);
 	mfc_port1_base_vaddr = phys_to_virt(mfc_port1_base_paddr);
 

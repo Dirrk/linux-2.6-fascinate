@@ -6,8 +6,4 @@
 ##############################################################################
 
 
-obj-$(CONFIG_COMPASS_AK8973B)	+= ak8973b.o
 obj-$(CONFIG_COMPASS_YAMAHA)	+= yamaha.o
-
-
-

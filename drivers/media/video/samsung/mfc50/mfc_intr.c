@@ -110,12 +110,13 @@ int mfc_wait_for_done(mfc_wait_done_type command)
 	if((command == R2H_CMD_CLOSE_INSTANCE_RET) ||
 	   (command == R2H_CMD_OPEN_INSTANCE_RET) ||
 	   (command == R2H_CMD_SYS_INIT_RET) ||	   
+	   (command == R2H_CMD_SEQ_DONE_RET) ||	   	   
 	   (command == R2H_CMD_FW_STATUS_RET))
 		nwait_time = MFC_WAIT_6_TIME;
 	else
-		nwait_time = MFC_WAIT_2_TIME;
+		nwait_time = MFC_WAIT_2_TIME;	
 
-		
+	
 #if defined(MFC_REQUEST_TIME)
 	long sec, msec;
 #endif

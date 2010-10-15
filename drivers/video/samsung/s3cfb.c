@@ -1,9 +1,9 @@
 /* linux/drivers/video/samsung/s3cfb.c
  *
- * Core file for Samsung Display Controller (FIMD) driver
+ * Copyright (c) 2010 Samsung Electronics Co., Ltd.
+ *              http://www.samsung.com/
  *
- * Jinsung Yang, Copyright (c) 2009 Samsung Electronics
- * 	http://www.samsungsemi.com/
+ * Core file for Samsung Display Controller (FIMD) driver
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -22,55 +22,30 @@
 #include <linux/mm.h>
 #include <linux/fb.h>
 #include <linux/ctype.h>
-#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/io.h>
+#include <linux/memory.h>
+#include <linux/cpufreq.h>
+#include <plat/clock.h>
+#include <plat/cpu-freq.h>
+#include <plat/media.h>
+#include <linux/delay.h>
+#include <mach/regs-clock.h>
 #ifdef CONFIG_HAS_WAKELOCK
 #include <linux/wakelock.h>
 #include <linux/earlysuspend.h>
 #include <linux/suspend.h>
 #endif
 
-#include <mach/gpio.h>
-
-#include <asm/io.h>
-#include <asm/memory.h>
-#include <plat/clock.h>
-#include <plat/pm.h>
-//#include <plat/regs-fb.h>
-#include <plat/regs-clock.h>
-#include <plat/regs-lcd.h>
-#ifndef CONFIG_FRAMEBUFFER_CONSOLE
-
-#ifdef CONFIG_FB_S3C_LTE480WV
-#include "logo_rgb24_wvga_landscape.h"
-#endif
-
-#ifdef CONFIG_FB_S3C_TL2796
-#include "logo_rgb24_wvga_portrait.h"
-#endif
-#endif // #ifndef CONFIG_FRAMEBUFFER_CONSOLE
-
 #include "s3cfb.h"
 #ifdef CONFIG_FB_S3C_MDNIE
 #include "s3cfb_mdnie.h"
 #endif
-
-extern void tl2796_ldi_init(void);
-extern void tl2796_ldi_enable(void);
-extern void tl2796_ldi_disable(void);
-extern void tl2796_ldi_stand_by(void);
-extern void tl2796_ldi_wake_up(void);
-
-#ifdef CONFIG_HAS_WAKELOCK
-        extern suspend_state_t get_suspend_state(void);
-        //extern suspend_state_t requested_suspend_state;
-#endif
-
 #include <linux/gpio.h>
 #include <plat/gpio-cfg.h>
-#include <plat/regs-gpio.h>
+#include <mach/gpio.h>
 
 static struct s3cfb_global *fbdev;
 
@@ -107,15 +82,64 @@ struct s3c_platform_fb *to_fb_plat(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 
-	return (struct s3c_platform_fb *) pdev->dev.platform_data;
+	return (struct s3c_platform_fb *)pdev->dev.platform_data;
 }
 
-#if 1
+#ifndef CONFIG_FRAMEBUFFER_CONSOLE
+static int s3cfb_draw_logo(struct fb_info *fb)
+{
+#ifdef CONFIG_FB_S3C_SPLASH_SCREEN
+	struct fb_fix_screeninfo *fix = &fb->fix;
+	struct fb_var_screeninfo *var = &fb->var;
+#if 0
+	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
+	memcpy(fbdev->fb[pdata->default_win]->screen_base,
+	       LOGO_RGB24, fix->line_length * var->yres);
+#else
+	u32 height = var->yres / 3;
+	u32 line = fix->line_length;
+	u32 i, j;
 
+	for (i = 0; i < height; i++) {
+		for (j = 0; j < var->xres; j++) {
+			memset(fb->screen_base + i * line + j * 4 + 0, 0x00, 1);
+			memset(fb->screen_base + i * line + j * 4 + 1, 0x00, 1);
+			memset(fb->screen_base + i * line + j * 4 + 2, 0xff, 1);
+			memset(fb->screen_base + i * line + j * 4 + 3, 0x00, 1);
+		}
+	}
+
+	for (i = height; i < height * 2; i++) {
+		for (j = 0; j < var->xres; j++) {
+			memset(fb->screen_base + i * line + j * 4 + 0, 0x00, 1);
+			memset(fb->screen_base + i * line + j * 4 + 1, 0xff, 1);
+			memset(fb->screen_base + i * line + j * 4 + 2, 0x00, 1);
+			memset(fb->screen_base + i * line + j * 4 + 3, 0x00, 1);
+		}
+	}
+
+	for (i = height * 2; i < height * 3; i++) {
+		for (j = 0; j < var->xres; j++) {
+			memset(fb->screen_base + i * line + j * 4 + 0, 0xff, 1);
+			memset(fb->screen_base + i * line + j * 4 + 1, 0x00, 1);
+			memset(fb->screen_base + i * line + j * 4 + 2, 0x00, 1);
+			memset(fb->screen_base + i * line + j * 4 + 3, 0x00, 1);
+		}
+	}
+#endif
+#endif
+	return 0;
+}
+#else
+
+#if defined(CONFIG_MACH_S5PC110_ARIES)
 extern int get_boot_charger_info(void);
 
-
+#if defined(CONFIG_ARIES_EUR)
 #include "logo_rgb24_wvga_portrait.h"
+#elif defined(CONFIG_ARIES_NTT)
+#include "logo_rgb24_wvga_portrait_docomo.h"
+#endif
 
 static int s3cfb_draw_logo(struct fb_info *fb)
 {
@@ -128,29 +152,17 @@ static int s3cfb_draw_logo(struct fb_info *fb)
 
 	if(ret){
 		memcpy(fbdev->fb[pdata->default_win]->screen_base, \
-			charging, fix->line_length * var->yres);
+				charging, fix->line_length * var->yres);
 	}
 	else{
-	memcpy(fbdev->fb[pdata->default_win]->screen_base, \
-		LOGO_RGB24, fix->line_length * var->yres);
+		memcpy(fbdev->fb[pdata->default_win]->screen_base, \
+				LOGO_RGB24, fix->line_length * var->yres);
 	}
-	
+
 	return 0;
 }
-#endif
+#endif	/* CONFIG_MACH_S5PC110_ARIES */
 
-
-#ifndef CONFIG_FRAMEBUFFER_CONSOLE
-static int s3cfb_draw_logo(struct fb_info *fb)
-{
-	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
-	struct fb_fix_screeninfo *fix = &fb->fix;
-	struct fb_var_screeninfo *var = &fb->var;
-	memcpy(fbdev->fb[pdata->default_win]->screen_base, \
-		LOGO_RGB24, fix->line_length * var->yres);
-	return 0;
-}
-#else
 int fb_is_primary_device(struct fb_info *fb)
 {
 	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
@@ -170,7 +182,7 @@ static irqreturn_t s3cfb_irq_frame(int irq, void *dev_id)
 	s3cfb_clear_interrupt(fbdev);
 
 	fbdev->wq_count++;
-	wake_up_interruptible(&fbdev->wq);
+	wake_up(&fbdev->wq);
 
 	return IRQ_HANDLED;
 }
@@ -193,6 +205,32 @@ static int s3cfb_enable_window(int id)
 		return -EFAULT;
 	} else {
 		win->enabled = 1;
+		return 0;
+	}
+}
+
+static int s3cfb_enable_localpath(int id)
+{
+	struct s3cfb_window *win = fbdev->fb[id]->par;
+
+	if (s3cfb_channel_localpath_on(fbdev, id)) {
+		win->enabled = 0;
+		return -EFAULT;
+	} else {
+		win->enabled = 1;
+		return 0;
+	}
+}
+
+static int s3cfb_disable_localpath(int id)
+{
+	struct s3cfb_window *win = fbdev->fb[id]->par;
+
+	if (s3cfb_channel_localpath_off(fbdev, id)) {
+		win->enabled = 1;
+		return -EFAULT;
+	} else {
+		win->enabled = 0;
 		return 0;
 	}
 }
@@ -233,30 +271,62 @@ static int s3cfb_map_video_memory(struct fb_info *fb)
 {
 	struct fb_fix_screeninfo *fix = &fb->fix;
 	struct s3cfb_window *win = fb->par;
+	int reserved_size = 0;
 
-	if (win->path == DATA_PATH_FIFO)
+	if (win->owner == DMA_MEM_OTHER)
 		return 0;
 
-	fb->screen_base = dma_alloc_writecombine(fbdev->dev, \
-				PAGE_ALIGN(fix->smem_len), \
-				(unsigned int *) &fix->smem_start, GFP_KERNEL);
+	fix->smem_start = s3c_get_media_memory_bank(S3C_MDEV_FIMD, 1);
+	reserved_size = s3c_get_media_memsize_bank(S3C_MDEV_FIMD, 1);
+	fb->screen_base = ioremap_wc(fix->smem_start, reserved_size);
 
 	if (!fb->screen_base)
 		return -ENOMEM;
 	else
-		info("[fb%d] dma: 0x%08x, cpu: 0x%08x, size: 0x%08x\n", \
-			win->id, (unsigned int) fix->smem_start, \
-			(unsigned int) fb->screen_base, fix->smem_len);
+		dev_info(fbdev->dev, "[fb%d] dma: 0x%08x, cpu: 0x%08x, "
+			 "size: 0x%08x\n", win->id,
+			 (unsigned int)fix->smem_start,
+			 (unsigned int)fb->screen_base, fix->smem_len);
 
+	memset(fb->screen_base, 0, fix->smem_len);
+	win->owner = DMA_MEM_FIMD;
 
-//	memset(fb->screen_base, 0, fix->smem_len);
+	return 0;
+}
 
+static int s3cfb_map_default_video_memory(struct fb_info *fb)
+{
+#if defined(CONFIG_FB_S3C_VIRTUAL)
+	struct fb_fix_screeninfo *fix = &fb->fix;
+	struct s3cfb_window *win = fb->par;
+	int reserved_size = 0;
+
+	if (win->owner == DMA_MEM_OTHER)
+		return 0;
+
+	fix->smem_start = s3c_get_media_memory_bank(S3C_MDEV_FIMD, 1);
+	reserved_size = s3c_get_media_memsize_bank(S3C_MDEV_FIMD, 1);
+	fb->screen_base = ioremap_wc(fix->smem_start, reserved_size);
+
+	if (!fb->screen_base)
+		return -ENOMEM;
+	else
+		dev_info(fbdev->dev, "[fb%d] dma: 0x%08x, cpu: 0x%08x, "
+			"size: 0x%08x\n", win->id,
+			(unsigned int)fix->smem_start,
+			(unsigned int)fb->screen_base, fix->smem_len);
+
+	memset(fb->screen_base, 0, fix->smem_len);
+	win->owner = DMA_MEM_FIMD;
+#else
+	s3cfb_map_video_memory(fb);
+#endif
 	/*
 	 *  Mark for GetLog (tkhwang)
 	 */
 
-   	frame_buf_mark.p_fb = 0x4FC00000; //0x4F400000; //0x4EC00000;   // OLD one : 0x4F800000 
-	
+   	frame_buf_mark.p_fb = 0x45160000;
+
 	return 0;
 }
 
@@ -266,11 +336,26 @@ static int s3cfb_unmap_video_memory(struct fb_info *fb)
 	struct s3cfb_window *win = fb->par;
 
 	if (fix->smem_start) {
-		dma_free_writecombine(fbdev->dev, fix->smem_len, \
-			fb->screen_base, fix->smem_start);
+		dma_free_writecombine(fbdev->dev, fix->smem_len,
+				      fb->screen_base, fix->smem_start);
 		fix->smem_start = 0;
 		fix->smem_len = 0;
-		info("[fb%d] video memory released\n", win->id);
+		dev_info(fbdev->dev, "[fb%d] video memory released\n", win->id);
+	}
+
+	return 0;
+}
+
+static int s3cfb_unmap_default_video_memory(struct fb_info *fb)
+{
+	struct fb_fix_screeninfo *fix = &fb->fix;
+	struct s3cfb_window *win = fb->par;
+
+	if (fix->smem_start) {
+		iounmap(fb->screen_base);
+		fix->smem_start = 0;
+		fix->smem_len = 0;
+		dev_info(fbdev->dev, "[fb%d] video memory released\n", win->id);
 	}
 
 	return 0;
@@ -326,8 +411,9 @@ static int s3cfb_set_bitfield(struct fb_var_screeninfo *var)
 		var->blue.offset = 0;
 		var->blue.length = 8;
 		var->transp.offset = 24;
-		// changed by jamie for LCD RGB32 (2009.10.22)
-		var->transp.length = 8;
+		var->transp.length = 8; //added for LCD RGB32
+//		var->transp.length = 0; //added for LCD RGB32
+
 		break;
 	}
 
@@ -348,19 +434,16 @@ static int s3cfb_set_alpha_info(struct fb_var_screeninfo *var,
 	return 0;
 }
 
-static int s3cfb_check_var(struct fb_var_screeninfo *var,
-				struct fb_info *fb)
+static int s3cfb_check_var(struct fb_var_screeninfo *var, struct fb_info *fb)
 {
-	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
-	struct fb_fix_screeninfo *fix = &fb->fix;
 	struct s3cfb_window *win = fb->par;
 	struct s3cfb_lcd *lcd = fbdev->lcd;
 
 	dev_dbg(fbdev->dev, "[fb%d] check_var\n", win->id);
 
-	if (var->bits_per_pixel != 16 && var->bits_per_pixel != 24 && \
-		var->bits_per_pixel != 32) {
-		err("invalid bits per pixel\n");
+	if (var->bits_per_pixel != 16 && var->bits_per_pixel != 24 &&
+	    var->bits_per_pixel != 32) {
+		dev_err(fbdev->dev, "invalid bits per pixel\n");
 		return -EINVAL;
 	}
 
@@ -370,11 +453,16 @@ static int s3cfb_check_var(struct fb_var_screeninfo *var,
 	if (var->yres > lcd->height)
 		var->yres = lcd->height;
 
-	if (var->xres_virtual != var->xres)
+	if (var->xres_virtual < var->xres)
 		var->xres_virtual = var->xres;
 
-	if (var->yres_virtual > var->yres * (fb->fix.ypanstep + 1))
-		var->yres_virtual = var->yres * (fb->fix.ypanstep + 1);
+#if defined(CONFIG_FB_S3C_VIRTUAL)
+	if (var->yres_virtual < var->yres)
+		var->yres_virtual = var->yres * CONFIG_FB_S3C_NR_BUFFERS;
+#else
+	if (var->yres_virtual > var->yres * CONFIG_FB_S3C_NR_BUFFERS)
+		var->yres_virtual = var->yres * CONFIG_FB_S3C_NR_BUFFERS;
+#endif
 
 	if (var->xoffset != 0)
 		var->xoffset = 0;
@@ -388,16 +476,24 @@ static int s3cfb_check_var(struct fb_var_screeninfo *var,
 	if (win->y + var->yres > lcd->height)
 		win->y = lcd->height - var->yres;
 
-	/* modify the fix info */
-	if (win->id != pdata->default_win) {
-		fix->line_length = var->xres_virtual * var->bits_per_pixel / 8;
-		fix->smem_len = fix->line_length * var->yres_virtual;
-	}
-
 	s3cfb_set_bitfield(var);
 	s3cfb_set_alpha_info(var, win);
 
-	return 0;	
+	return 0;
+}
+
+static void s3cfb_set_win_params(int id)
+{
+	s3cfb_set_window_control(fbdev, id);
+	s3cfb_set_window_position(fbdev, id);
+	s3cfb_set_window_size(fbdev, id);
+	s3cfb_set_buffer_address(fbdev, id);
+	s3cfb_set_buffer_size(fbdev, id);
+
+	if (id > 0) {
+		s3cfb_set_alpha_blending(fbdev, id);
+		s3cfb_set_chroma_key(fbdev, id);
+	}
 }
 
 static int s3cfb_set_par(struct fb_info *fb)
@@ -407,19 +503,22 @@ static int s3cfb_set_par(struct fb_info *fb)
 
 	dev_dbg(fbdev->dev, "[fb%d] set_par\n", win->id);
 
-	if ((win->id != pdata->default_win) && !fb->fix.smem_start)
+	if ((win->id != pdata->default_win) && fb->fix.smem_start)
+		s3cfb_unmap_video_memory(fb);
+
+	/* modify the fix info */
+	if (win->id != pdata->default_win) {
+		fb->fix.line_length = fb->var.xres_virtual *
+						fb->var.bits_per_pixel / 8;
+		fb->fix.smem_len = fb->fix.line_length * fb->var.yres_virtual;
+	}
+
+	if (win->id != pdata->default_win)
 		s3cfb_map_video_memory(fb);
 
-	s3cfb_set_window_control(fbdev, win->id);
-	s3cfb_set_window_position(fbdev, win->id);
-	s3cfb_set_window_size(fbdev, win->id);
-	s3cfb_set_buffer_address(fbdev, win->id);
-	s3cfb_set_buffer_size(fbdev, win->id);
+	s3cfb_set_win_params(win->id);
 
-	if (win->id > 0)
-		s3cfb_set_alpha_blending(fbdev, win->id);
-
-	return 0;	
+	return 0;
 }
 
 static int s3cfb_blank(int blank_mode, struct fb_info *fb)
@@ -430,17 +529,31 @@ static int s3cfb_blank(int blank_mode, struct fb_info *fb)
 
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
-		if (fb->fix.smem_start)
+		if (fb->fix.smem_start) {
+			s3cfb_win_map_off(fbdev, win->id);
 			s3cfb_enable_window(win->id);
-		else
-			info("[fb%d] no allocated memory for unblank\n", \
-				win->id);
+		} else {
+			dev_info(fbdev->dev,
+				 "[fb%d] no allocated memory for unblank\n",
+				 win->id);
+		}
+
+		break;
+
+	case FB_BLANK_NORMAL:
+		s3cfb_win_map_on(fbdev, win->id, 0x0);
+		s3cfb_enable_window(win->id);
+
 		break;
 
 	case FB_BLANK_POWERDOWN:
 		s3cfb_disable_window(win->id);
+		s3cfb_win_map_off(fbdev, win->id);
+
 		break;
 
+	case FB_BLANK_VSYNC_SUSPEND:	/* fall through */
+	case FB_BLANK_HSYNC_SUSPEND:	/* fall through */
 	default:
 		dev_dbg(fbdev->dev, "unsupported blank mode\n");
 		return -EINVAL;
@@ -449,19 +562,18 @@ static int s3cfb_blank(int blank_mode, struct fb_info *fb)
 	return 0;
 }
 
-static int s3cfb_pan_display(struct fb_var_screeninfo *var, 
-				struct fb_info *fb)
+static int s3cfb_pan_display(struct fb_var_screeninfo *var, struct fb_info *fb)
 {
 	struct s3cfb_window *win = fb->par;
 
 	if (var->yoffset + var->yres > var->yres_virtual) {
-		err("invalid yoffset value\n");
+		dev_err(fbdev->dev, "invalid yoffset value\n");
 		return -EINVAL;
 	}
 
 	fb->var.yoffset = var->yoffset;
 
-	dev_dbg(fbdev->dev, "[fb%d] yoffset for pan display: %d\n", win->id, \
+	dev_dbg(fbdev->dev, "[fb%d] yoffset for pan display: %d\n", win->id,
 		var->yoffset);
 
 	s3cfb_set_buffer_address(fbdev, win->id);
@@ -470,7 +582,7 @@ static int s3cfb_pan_display(struct fb_var_screeninfo *var,
 }
 
 static inline unsigned int __chan_to_field(unsigned int chan,
-						struct fb_bitfield bf)
+					   struct fb_bitfield bf)
 {
 	chan &= 0xffff;
 	chan >>= 16 - bf.length;
@@ -479,10 +591,10 @@ static inline unsigned int __chan_to_field(unsigned int chan,
 }
 
 static int s3cfb_setcolreg(unsigned int regno, unsigned int red,
-				unsigned int green, unsigned int blue,
-				unsigned int transp, struct fb_info *fb)
+			   unsigned int green, unsigned int blue,
+			   unsigned int transp, struct fb_info *fb)
 {
-	unsigned int *pal = (unsigned int *) fb->pseudo_palette;
+	unsigned int *pal = (unsigned int *)fb->pseudo_palette;
 	unsigned int val = 0;
 
 	if (regno < 16) {
@@ -490,7 +602,7 @@ static int s3cfb_setcolreg(unsigned int regno, unsigned int red,
 		val |= __chan_to_field(red, fb->var.red);
 		val |= __chan_to_field(green, fb->var.green);
 		val |= __chan_to_field(blue, fb->var.blue);
-		val |= __chan_to_field(transp, fb->var.transp);			
+		val |= __chan_to_field(transp, fb->var.transp);
 
 		pal[regno] = val;
 	}
@@ -503,16 +615,17 @@ static int s3cfb_open(struct fb_info *fb, int user)
 	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
 	struct s3cfb_window *win = fb->par;
 	int ret = 0;
+
 	mutex_lock(&fbdev->lock);
 
 	if (atomic_read(&win->in_use)) {
 		if (win->id == pdata->default_win) {
-			dev_dbg(fbdev->dev, \
+			dev_dbg(fbdev->dev,
 				"multiple open for default window\n");
 			ret = 0;
 		} else {
-			dev_dbg(fbdev->dev, \
-				"do not allow multiple open " \
+			dev_dbg(fbdev->dev,
+				"do not allow multiple open "
 				"for non-default window\n");
 			ret = -EBUSY;
 		}
@@ -528,6 +641,7 @@ static int s3cfb_release_window(struct fb_info *fb)
 {
 	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
 	struct s3cfb_window *win = fb->par;
+
 	if (win->id != pdata->default_win) {
 		s3cfb_disable_window(win->id);
 		s3cfb_unmap_video_memory(fb);
@@ -563,15 +677,14 @@ static int s3cfb_wait_for_vsync(void)
 {
 	dev_dbg(fbdev->dev, "waiting for VSYNC interrupt\n");
 
-	interruptible_sleep_on_timeout(&fbdev->wq, HZ / 10);
+	sleep_on_timeout(&fbdev->wq, HZ / 10);
 
 	dev_dbg(fbdev->dev, "got a VSYNC interrupt\n");
 
 	return 0;
 }
 
-static int s3cfb_ioctl(struct fb_info *fb, unsigned int cmd,
-			unsigned long arg)
+static int s3cfb_ioctl(struct fb_info *fb, unsigned int cmd, unsigned long arg)
 {
 	struct fb_var_screeninfo *var = &fb->var;
 	struct s3cfb_window *win = fb->par;
@@ -597,9 +710,9 @@ static int s3cfb_ioctl(struct fb_info *fb, unsigned int cmd,
 		break;
 
 	case S3CFB_WIN_POSITION:
-		if (copy_from_user(&p.user_window, \
-			(struct s3cfb_user_window __user *) arg, \
-			sizeof(p.user_window)))
+		if (copy_from_user(&p.user_window,
+				   (struct s3cfb_user_window __user *)arg,
+				   sizeof(p.user_window)))
 			ret = -EFAULT;
 		else {
 			if (p.user_window.x < 0)
@@ -623,39 +736,38 @@ static int s3cfb_ioctl(struct fb_info *fb, unsigned int cmd,
 		break;
 
 	case S3CFB_WIN_SET_PLANE_ALPHA:
-		if (copy_from_user(&p.user_alpha, \
-			(struct s3cfb_user_plane_alpha __user *) arg, \
-			sizeof(p.user_alpha)))
+		if (copy_from_user(&p.user_alpha,
+				   (struct s3cfb_user_plane_alpha __user *)arg,
+				   sizeof(p.user_alpha)))
 			ret = -EFAULT;
 		else {
 			win->alpha.mode = PLANE_BLENDING;
 			win->alpha.channel = p.user_alpha.channel;
-			win->alpha.value = \
-				S3CFB_AVALUE(p.user_alpha.red, \
-					p.user_alpha.green, \
-					p.user_alpha.blue);
+			win->alpha.value =
+			    S3CFB_AVALUE(p.user_alpha.red,
+					 p.user_alpha.green, p.user_alpha.blue);
 
 			s3cfb_set_alpha_blending(fbdev, win->id);
 		}
 		break;
 
 	case S3CFB_WIN_SET_CHROMA:
-		if (copy_from_user(&p.user_chroma, \
-			(struct s3cfb_user_chroma __user *) arg, \
-			sizeof(p.user_chroma)))
+		if (copy_from_user(&p.user_chroma,
+				   (struct s3cfb_user_chroma __user *)arg,
+				   sizeof(p.user_chroma)))
 			ret = -EFAULT;
 		else {
 			win->chroma.enabled = p.user_chroma.enabled;
-			win->chroma.key = S3CFB_CHROMA(p.user_chroma.red, \
-						p.user_chroma.green, \
-						p.user_chroma.blue);
+			win->chroma.key = S3CFB_CHROMA(p.user_chroma.red,
+						       p.user_chroma.green,
+						       p.user_chroma.blue);
 
 			s3cfb_set_chroma_key(fbdev, win->id);
 		}
 		break;
 
 	case S3CFB_SET_VSYNC_INT:
-		if (get_user(p.vsync, (int __user *) arg))
+		if (get_user(p.vsync, (int __user *)arg))
 			ret = -EFAULT;
 		else {
 			if (p.vsync)
@@ -690,38 +802,39 @@ static int s3cfb_ioctl(struct fb_info *fb, unsigned int cmd,
 }
 
 struct fb_ops s3cfb_ops = {
-	.owner		= THIS_MODULE,
-	.fb_fillrect	= cfb_fillrect,
-	.fb_copyarea	= cfb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
-	.fb_check_var	= s3cfb_check_var,
-	.fb_set_par	= s3cfb_set_par,
-	.fb_blank	= s3cfb_blank,
-	.fb_pan_display	= s3cfb_pan_display,
-	.fb_setcolreg	= s3cfb_setcolreg,
-	.fb_cursor	= s3cfb_cursor,
-	.fb_ioctl	= s3cfb_ioctl,
-	.fb_open	= s3cfb_open,
-	.fb_release	= s3cfb_release,
+	.owner = THIS_MODULE,
+	.fb_fillrect = cfb_fillrect,
+	.fb_copyarea = cfb_copyarea,
+	.fb_imageblit = cfb_imageblit,
+	.fb_check_var = s3cfb_check_var,
+	.fb_set_par = s3cfb_set_par,
+	.fb_blank = s3cfb_blank,
+	.fb_pan_display = s3cfb_pan_display,
+	.fb_setcolreg = s3cfb_setcolreg,
+	.fb_cursor = s3cfb_cursor,
+	.fb_ioctl = s3cfb_ioctl,
+	.fb_open = s3cfb_open,
+	.fb_release = s3cfb_release,
 };
 
 /* new function to open fifo */
-int s3cfb_open_fifo(int id, int ch, int (*do_priv)(void *), void *param)
+int s3cfb_open_fifo(int id, int ch, int (*do_priv) (void *), void *param)
 {
 	struct s3cfb_window *win = fbdev->fb[id]->par;
 
 	dev_dbg(fbdev->dev, "[fb%d] open fifo\n", win->id);
 
-	win->path = DATA_PATH_FIFO;
-	win->local_channel = ch;
+	if (win->path == DATA_PATH_DMA) {
+		dev_err(fbdev->dev, "WIN%d is busy.\n", id);
+		return -EFAULT;
+	}
 
-	s3cfb_set_vsync_interrupt(fbdev, 1);
-	s3cfb_wait_for_vsync();
-	s3cfb_set_vsync_interrupt(fbdev, 0);
+	win->local_channel = ch;
 
 	if (do_priv) {
 		if (do_priv(param)) {
-			err("failed to run for private fifo open\n");
+			dev_err(fbdev->dev, "failed to run for "
+				"private fifo open\n");
 			s3cfb_enable_window(id);
 			return -EFAULT;
 		}
@@ -729,92 +842,52 @@ int s3cfb_open_fifo(int id, int ch, int (*do_priv)(void *), void *param)
 
 	s3cfb_set_window_control(fbdev, id);
 	s3cfb_enable_window(id);
+	s3cfb_enable_localpath(id);
 
 	return 0;
 }
 
-/* new function to close fifo */
-int s3cfb_close_fifo(int id, int (*do_priv)(void *), void *param, int sleep)
+int s3cfb_close_fifo(int id, int (*do_priv) (void *), void *param)
 {
 	struct s3cfb_window *win = fbdev->fb[id]->par;
+	win->path = DATA_PATH_DMA;
 
 	dev_dbg(fbdev->dev, "[fb%d] close fifo\n", win->id);
 
-	if (sleep)
-		win->path = DATA_PATH_FIFO;
-	else
-		win->path = DATA_PATH_DMA;
-
-	s3cfb_set_vsync_interrupt(fbdev, 1);
-	s3cfb_wait_for_vsync();
-	s3cfb_set_vsync_interrupt(fbdev, 0);
-
-	s3cfb_display_off(fbdev);
-	s3cfb_check_line_count(fbdev);
-	s3cfb_disable_window(id);
-
 	if (do_priv) {
+		s3cfb_display_off(fbdev);
+
 		if (do_priv(param)) {
-			err("failed to run for private fifo close\n");
+			dev_err(fbdev->dev, "failed to run for"
+				"private fifo close\n");
 			s3cfb_enable_window(id);
 			s3cfb_display_on(fbdev);
 			return -EFAULT;
 		}
+
+		s3cfb_disable_window(id);
+		s3cfb_disable_localpath(id);
+		s3cfb_display_on(fbdev);
+	} else {
+		s3cfb_disable_window(id);
+		s3cfb_disable_localpath(id);	/* Only for FIMD 6.2 */
 	}
 
-	s3cfb_display_on(fbdev);
-
 	return 0;
-}
-
-/* for backward compatibilities */
-void s3cfb_enable_local(int id, int in_yuv, int ch)
-{
-	struct s3cfb_window *win = fbdev->fb[id]->par;
-
-	win->path = DATA_PATH_FIFO;
-	win->local_channel = ch;
-
-	s3cfb_set_vsync_interrupt(fbdev, 1);
-	s3cfb_wait_for_vsync();
-	s3cfb_set_vsync_interrupt(fbdev, 0);
-
-	s3cfb_set_window_control(fbdev, id);
-	s3cfb_enable_window(id);
-}
-
-/* for backward compatibilities */
-void s3cfb_enable_dma(int id)
-{
-	struct s3cfb_window *win = fbdev->fb[id]->par;
-
-	win->path = DATA_PATH_DMA;
-
-	s3cfb_set_vsync_interrupt(fbdev, 1);
-	s3cfb_wait_for_vsync();
-	s3cfb_set_vsync_interrupt(fbdev, 0);
-
-	s3cfb_disable_window(id);
-	s3cfb_display_off(fbdev);
-	s3cfb_set_window_control(fbdev, id);
-	s3cfb_display_on(fbdev);
 }
 
 int s3cfb_direct_ioctl(int id, unsigned int cmd, unsigned long arg)
 {
 	struct fb_info *fb = fbdev->fb[id];
-	struct fb_var_screeninfo *var = &fb->var;	
+	struct fb_var_screeninfo *var = &fb->var;
+	struct fb_fix_screeninfo *fix = &fb->fix;
 	struct s3cfb_window *win = fb->par;
 	struct s3cfb_lcd *lcd = fbdev->lcd;
 	struct s3cfb_user_window user_win;
-	void *argp = (void *) arg;
+	void *argp = (void *)arg;
 	int ret = 0;
 
 	switch (cmd) {
-	case FBIO_ALLOC:
-		win->path = (enum s3cfb_data_path_t) argp;
-		break;
-
 	case FBIOGET_FSCREENINFO:
 		ret = memcpy(argp, &fb->fix, sizeof(fb->fix)) ? 0 : -EFAULT;
 		break;
@@ -824,27 +897,30 @@ int s3cfb_direct_ioctl(int id, unsigned int cmd, unsigned long arg)
 		break;
 
 	case FBIOPUT_VSCREENINFO:
-		ret = s3cfb_check_var((struct fb_var_screeninfo *) argp, fb);
+		ret = s3cfb_check_var((struct fb_var_screeninfo *)argp, fb);
 		if (ret) {
-			err("invalid vscreeninfo\n");
+			dev_err(fbdev->dev, "invalid vscreeninfo\n");
 			break;
 		}
 
-		ret = memcpy(&fb->var, (struct fb_var_screeninfo *) argp, \
-				sizeof(fb->var)) ? 0 : -EFAULT;
+		ret = memcpy(&fb->var, (struct fb_var_screeninfo *)argp,
+			     sizeof(fb->var)) ? 0 : -EFAULT;
 		if (ret) {
-			err("failed to put new vscreeninfo\n");
+			dev_err(fbdev->dev, "failed to put new vscreeninfo\n");
 			break;
 		}
 
-		ret = s3cfb_set_par(fb);
+		fix->line_length = var->xres_virtual * var->bits_per_pixel / 8;
+		fix->smem_len = fix->line_length * var->yres_virtual;
+
+		s3cfb_set_win_params(id);
 		break;
 
 	case S3CFB_WIN_POSITION:
-		ret = memcpy(&user_win, (struct s3cfb_user_window __user *) arg, \
-				sizeof(user_win)) ? 0 : -EFAULT;
+		ret = memcpy(&user_win, (struct s3cfb_user_window __user *)arg,
+			     sizeof(user_win)) ? 0 : -EFAULT;
 		if (ret) {
-			err("failed to S3CFB_WIN_POSITION.\n");
+			dev_err(fbdev->dev, "failed to S3CFB_WIN_POSITION\n");
 			break;
 		}
 
@@ -867,18 +943,10 @@ int s3cfb_direct_ioctl(int id, unsigned int cmd, unsigned long arg)
 		s3cfb_set_window_position(fbdev, win->id);
 		break;
 
-	case S3CFB_SET_SUSPEND_FIFO:
-		win->suspend_fifo = argp;
-		break;
-
-	case S3CFB_SET_RESUME_FIFO:
-		win->resume_fifo = argp;
-		break;
-
 	case S3CFB_GET_LCD_WIDTH:
 		ret = memcpy(argp, &lcd->width, sizeof(int)) ? 0 : -EFAULT;
 		if (ret) {
-			err("failed to S3CFB_GET_LCD_WIDTH.\n");
+			dev_err(fbdev->dev, "failed to S3CFB_GET_LCD_WIDTH\n");
 			break;
 		}
 
@@ -887,15 +955,54 @@ int s3cfb_direct_ioctl(int id, unsigned int cmd, unsigned long arg)
 	case S3CFB_GET_LCD_HEIGHT:
 		ret = memcpy(argp, &lcd->height, sizeof(int)) ? 0 : -EFAULT;
 		if (ret) {
-			err("failed to S3CFB_GET_LCD_HEIGHT.\n");
+			dev_err(fbdev->dev, "failed to S3CFB_GET_LCD_HEIGHT\n");
 			break;
 		}
 
 		break;
 
-	/*
-	 * for FBIO_WAITFORVSYNC
-	*/
+	case S3CFB_SET_WRITEBACK:
+		if ((u32)argp == 1)
+			fbdev->output = OUTPUT_WB_RGB;
+		else
+			fbdev->output = OUTPUT_RGB;
+
+		s3cfb_set_output(fbdev);
+
+		break;
+
+	case S3CFB_SET_WIN_ON:
+		s3cfb_enable_window(id);
+		break;
+
+	case S3CFB_SET_WIN_OFF:
+		s3cfb_disable_window(id);
+		break;
+
+	case S3CFB_SET_WIN_PATH:
+		win->path = (enum s3cfb_data_path_t)argp;
+		break;
+
+	case S3CFB_SET_WIN_ADDR:
+		fix->smem_start = (unsigned long)argp;
+		s3cfb_set_buffer_address(fbdev, id);
+		break;
+
+	case S3CFB_SET_WIN_MEM:
+		win->owner = (enum s3cfb_mem_owner_t)argp;
+		break;
+
+	case S3CFB_SET_VSYNC_INT:
+		if (argp)
+			s3cfb_set_global_interrupt(fbdev, 1);
+
+		s3cfb_set_vsync_interrupt(fbdev, (int)argp);
+		break;
+
+	case S3CFB_GET_VSYNC_INT_STATUS:
+		ret = s3cfb_get_vsync_interrupt(fbdev);
+		break;
+
 	default:
 		ret = s3cfb_ioctl(fb, cmd, arg);
 		break;
@@ -903,12 +1010,10 @@ int s3cfb_direct_ioctl(int id, unsigned int cmd, unsigned long arg)
 
 	return ret;
 }
-
 EXPORT_SYMBOL(s3cfb_direct_ioctl);
 
 static int s3cfb_init_fbinfo(int id)
 {
-	struct s3c_platform_fb *pdata = to_fb_plat(fbdev->dev);
 	struct fb_info *fb = fbdev->fb[id];
 	struct fb_fix_screeninfo *fix = &fb->fix;
 	struct fb_var_screeninfo *var = &fb->var;
@@ -916,7 +1021,7 @@ static int s3cfb_init_fbinfo(int id)
 	struct s3cfb_alpha *alpha = &win->alpha;
 	struct s3cfb_lcd *lcd = fbdev->lcd;
 	struct s3cfb_lcd_timing *timing = &lcd->timing;
-	
+
 	memset(win, 0, sizeof(struct s3cfb_window));
 	platform_set_drvdata(to_platform_device(fbdev->dev), fb);
 	strcpy(fix->id, S3CFB_NAME);
@@ -931,29 +1036,34 @@ static int s3cfb_init_fbinfo(int id)
 	fb->fbops = &s3cfb_ops;
 	fb->flags = FBINFO_FLAG_DEFAULT;
 	fb->pseudo_palette = &win->pseudo_pal;
+#if (CONFIG_FB_S3C_NR_BUFFERS != 1)
+	fix->xpanstep = 2;
+	fix->ypanstep = 1;
+#else
 	fix->xpanstep = 0;
-	fix->ypanstep = pdata->nr_buffers[id] - 1;
+	fix->ypanstep = 0;
+#endif
 	fix->type = FB_TYPE_PACKED_PIXELS;
 	fix->accel = FB_ACCEL_NONE;
 	fix->visual = FB_VISUAL_TRUECOLOR;
-	var->xres = lcd->width;	
+	var->xres = lcd->width;
 	var->yres = lcd->height;
-	var->xres_virtual = var->xres  ;
-	// for Android
-	var->yres_virtual = var->yres + (var->yres * fix->ypanstep);
-#if 0
-	var->bits_per_pixel = 16;
+
+#if defined(CONFIG_FB_S3C_VIRTUAL)
+	var->xres_virtual = CONFIG_FB_S3C_X_VRES;
+	var->yres_virtual = CONFIG_FB_S3C_Y_VRES * CONFIG_FB_S3C_NR_BUFFERS;
 #else
-	// changed by jamie for LCD RGB32 (2009.10.22)
-	var->bits_per_pixel = 32;
+	var->xres_virtual = var->xres;
+	var->yres_virtual = var->yres * CONFIG_FB_S3C_NR_BUFFERS;
 #endif
+	var->bits_per_pixel = 32;
 	var->xoffset = 0;
 	var->yoffset = 0;
-	var->width = lcd->p_width;	// width of lcd in mm
-	var->height= lcd->p_height;	// height of lcd in mm
+	var->width = lcd->p_width;	// height of lcd in mm
+	var->height = lcd->p_height; 	// width of lcd in mm 
 	var->transp.length = 0;
 
-	fix->line_length = var->xres_virtual * (var->bits_per_pixel / 8 );
+	fix->line_length = var->xres_virtual * var->bits_per_pixel / 8;
 	fix->smem_len = fix->line_length * var->yres_virtual;
 
 	var->nonstd = 0;
@@ -966,15 +1076,19 @@ static int s3cfb_init_fbinfo(int id)
 	var->upper_margin = timing->v_fp;
 	var->lower_margin = timing->v_bp;
 
-	var->pixclock = lcd->freq * (var->left_margin + var->right_margin + \
-			var->hsync_len + var->xres) * \
-			(var->upper_margin + var->lower_margin + \
-			var->vsync_len + var->yres);
+	var->pixclock = lcd->freq * (var->left_margin + var->right_margin +
+				var->hsync_len + var->xres) *
+				(var->upper_margin + var->lower_margin +
+				var->vsync_len + var->yres);
 
+#if defined(CONFIG_FB_S3C_LTE480WV)
+	// LTE480WV LCD Device tunig.
+	var->pixclock *= 2;
+#endif
 	dev_dbg(fbdev->dev, "pixclock: %d\n", var->pixclock);
 
 	s3cfb_set_bitfield(var);
-	s3cfb_set_alpha_info(var, win); 
+	s3cfb_set_alpha_info(var, win);
 
 	return 0;
 }
@@ -985,34 +1099,36 @@ static int s3cfb_alloc_framebuffer(void)
 	int ret, i;
 
 	/* alloc for framebuffers */
-	fbdev->fb = (struct fb_info **) kmalloc(pdata->nr_wins * \
-			sizeof(struct fb_info *), GFP_KERNEL);
+	fbdev->fb = kmalloc(pdata->nr_wins *
+			    sizeof(struct fb_info *), GFP_KERNEL);
 	if (!fbdev->fb) {
-		err("not enough memory\n");
+		dev_err(fbdev->dev, "not enough memory\n");
 		ret = -ENOMEM;
 		goto err_alloc;
 	}
 
 	/* alloc for each framebuffer */
 	for (i = 0; i < pdata->nr_wins; i++) {
-		fbdev->fb[i] = framebuffer_alloc(sizeof(struct s3cfb_window), \
-				fbdev->dev);
+		fbdev->fb[i] = framebuffer_alloc(sizeof(struct s3cfb_window),
+						 fbdev->dev);
 		if (!fbdev->fb[i]) {
-			err("not enough memory\n");
+			dev_err(fbdev->dev, "not enough memory\n");
 			ret = -ENOMEM;
 			goto err_alloc_fb;
 		}
 
 		ret = s3cfb_init_fbinfo(i);
 		if (ret) {
-			err("failed to allocate memory for fb%d\n", i);
+			dev_err(fbdev->dev,
+				"failed to allocate memory for fb%d\n", i);
 			ret = -ENOMEM;
 			goto err_alloc_fb;
 		}
 
 		if (i == pdata->default_win) {
-			if (s3cfb_map_video_memory(fbdev->fb[i])) {
-				err("failed to map video memory " \
+			if (s3cfb_map_default_video_memory(fbdev->fb[i])) {
+				dev_err(fbdev->dev,
+					"failed to map video memory "
 					"for default window (%d)\n", i);
 				ret = -ENOMEM;
 				goto err_alloc_fb;
@@ -1042,25 +1158,32 @@ int s3cfb_register_framebuffer(void)
 	for (i = 0; i < pdata->nr_wins; i++) {
 		ret = register_framebuffer(fbdev->fb[i]);
 		if (ret) {
-			err("failed to register framebuffer device\n");
+			dev_err(fbdev->dev, "failed to register "
+				"framebuffer device\n");
 			return -EINVAL;
 		}
-
-#if 1
+#ifndef CONFIG_FRAMEBUFFER_CONSOLE
 		if (i == pdata->default_win) {
 			s3cfb_check_var(&fbdev->fb[i]->var, fbdev->fb[i]);
 			s3cfb_set_par(fbdev->fb[i]);
 			s3cfb_draw_logo(fbdev->fb[i]);
 		}
-#endif
-
+#else
+#if defined(CONFIG_MACH_S5PC110_ARIES)
+		if (i == pdata->default_win) {
+			s3cfb_check_var(&fbdev->fb[i]->var, fbdev->fb[i]);
+			s3cfb_set_par(fbdev->fb[i]);
+			s3cfb_draw_logo(fbdev->fb[i]);
+		}
+#endif	/* CONFIG_MACH_S5PC110_ARIES */
+#endif	/* CONFIG_FRAMEBUFFER_CONSOLE */
 	}
 
 	return 0;
 }
 
 static int s3cfb_sysfs_show_win_power(struct device *dev,
-		struct device_attribute *attr, char *buf)
+				      struct device_attribute *attr, char *buf)
 {
 	struct s3c_platform_fb *pdata = to_fb_plat(dev);
 	struct s3cfb_window *win;
@@ -1077,10 +1200,11 @@ static int s3cfb_sysfs_show_win_power(struct device *dev,
 }
 
 static int s3cfb_sysfs_store_win_power(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t len)
+				       struct device_attribute *attr,
+				       const char *buf, size_t len)
 {
 	struct s3c_platform_fb *pdata = to_fb_plat(dev);
-	char temp[4] = {0, };
+	char temp[4] = { 0, };
 	const char *p = buf;
 	int id, to;
 
@@ -1110,80 +1234,109 @@ static int s3cfb_sysfs_store_win_power(struct device *dev,
 	return len;
 }
 
-static DEVICE_ATTR(win_power, 0644, \
-			s3cfb_sysfs_show_win_power,
-			s3cfb_sysfs_store_win_power);
+static DEVICE_ATTR(win_power, 0644,
+		   s3cfb_sysfs_show_win_power, s3cfb_sysfs_store_win_power);
 
-static int s3cfb_sysfs_show_lcd_power(struct device *dev, struct device_attribute *attr, char *buf)
+#ifdef CONFIG_CPU_FREQ
+/*
+ * CPU clock speed change handler.  We need to adjust the LCD timing
+ * parameters when the CPU clock is adjusted by the power management
+ * subsystem.
+ */
+static int
+s3cfb_freq_transition(struct notifier_block *nb, unsigned long val,
+			 void *data)
 {
-	return ;
+	struct s3cfb_global *fbdev;
+	struct s3c_cpufreq_freqs *f;
+
+	fbdev = container_of(nb, struct s3cfb_global, freq_transition);
+	f = to_s3c_cpufreq(data);
+#if defined(CONFIG_CPU_S5PC110)
+	printk(KERN_INFO "f->new.hclk_msys =%d, f->old.hclk_msys=%d\n",
+					f->new.hclk_msys, f->old.hclk_msys);
+
+	if (f->new.hclk_msys == f->old.hclk_msys)
+		return 0;
+#endif
+	switch (val) {
+	case CPUFREQ_PRECHANGE:
+		//printk(KERN_DEBUG "s3cfb cpufreq prechange\n");
+		break;
+
+	case CPUFREQ_POSTCHANGE:
+		//printk(KERN_DEBUG "s3cfb cpufreq postchange\n");
+		break;
+	}
+	return 0;
 }
 
-static int s3cfb_sysfs_store_lcd_power(struct device *dev, struct device_attribute *attr, const char *buf, size_t len)
+static int
+s3cfb_freq_policy(struct notifier_block *nb, unsigned long val,
+		     void *data)
 {
-	if (len < 1)
-		return -EINVAL;
+	struct s3cfb_global *fbdev;
+	struct cpufreq_policy *policy;
 
-	if (strnicmp(buf, "on", 2) == 0 || strnicmp(buf, "1", 1) == 0)
-		tl2796_ldi_wake_up();
-	else if (strnicmp(buf, "off", 3) == 0 || strnicmp(buf, "0", 1) == 0)
-		tl2796_ldi_stand_by();
-	else
-		return -EINVAL;
+	fbdev = container_of(nb, struct s3cfb_global, freq_policy);
+	policy = data;
 
-	return len;
+	switch (val) {
+	case CPUFREQ_ADJUST:
+	case CPUFREQ_INCOMPATIBLE:
+		break;
+	case CPUFREQ_NOTIFY:
+		break;
+	}
+	return 0;
 }
-
-
-static DEVICE_ATTR(lcd_power, 0777,
-			s3cfb_sysfs_show_lcd_power,
-			s3cfb_sysfs_store_lcd_power);
+#endif
 
 static int s3cfb_probe(struct platform_device *pdev)
 {
 	struct s3c_platform_fb *pdata;
 	struct resource *res;
 	int ret = 0;
-//	s3cfb_info_t *info;
 
 	/* initialzing global structure */
 	fbdev = kzalloc(sizeof(struct s3cfb_global), GFP_KERNEL);
 	if (!fbdev) {
-		err("failed to allocate for global fb structure\n");
+		dev_err(fbdev->dev, "failed to allocate for "
+			"global fb structure\n");
 		goto err_global;
 	}
 
 	fbdev->dev = &pdev->dev;
+#if defined(CONFIG_MACH_S5PC110_ARIES)
 	s3cfb_set_lcd_info(fbdev);
+#endif
 
 	/* gpio */
 	pdata = to_fb_plat(&pdev->dev);
+
+#if defined(CONFIG_MACH_S5PC110_P1)
+	fbdev->lcd = (struct s3cfb_lcd*)pdata->lcd;
+#endif
+#if !defined(CONFIG_MACH_S5PC110_ARIES)
 	if (pdata->cfg_gpio)
 		pdata->cfg_gpio(pdev);
-
-	/* clock */
-	fbdev->clock = clk_get(&pdev->dev, pdata->clk_name);
-	if (IS_ERR(fbdev->clock)) {
-		err("failed to get fimd clock source\n");
-		ret = -EINVAL;
-		goto err_clk;
-	}
-
-	clk_enable(fbdev->clock);
+#endif	/* CONFIG_MACH_S5PC110_ARIES */
+	if (pdata->clk_on)
+		pdata->clk_on(pdev, &fbdev->clock);
 
 	/* io memory */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
-		err("failed to get io memory region\n");
+		dev_err(fbdev->dev, "failed to get io memory region\n");
 		ret = -EINVAL;
 		goto err_io;
 	}
 
 	/* request mem region */
-	res = request_mem_region(res->start, \
-		res->end - res->start + 1, pdev->name);
+	res = request_mem_region(res->start,
+				 res->end - res->start + 1, pdev->name);
 	if (!res) {
-		err("failed to request io memory region\n");
+		dev_err(fbdev->dev, "failed to request io memory region\n");
 		ret = -EINVAL;
 		goto err_io;
 	}
@@ -1191,7 +1344,7 @@ static int s3cfb_probe(struct platform_device *pdev)
 	/* ioremap for register block */
 	fbdev->regs = ioremap(res->start, res->end - res->start + 1);
 	if (!fbdev->regs) {
-		err("failed to remap io region\n");
+		dev_err(fbdev->dev, "failed to remap io region\n");
 		ret = -EINVAL;
 		goto err_io;
 	}
@@ -1203,19 +1356,12 @@ static int s3cfb_probe(struct platform_device *pdev)
 	
 	/* irq */
 	fbdev->irq = platform_get_irq(pdev, 0);
-
-#if 0
-	if (request_irq(fbdev->irq, s3cfb_irq_frame, IRQF_DISABLED, \
-				pdev->name, fbdev)) {
-#else
-	if (request_irq(fbdev->irq, s3cfb_irq_frame, IRQF_SHARED, \
-				pdev->name, fbdev)) {
-#endif
-		err("request_irq failed\n");
+	if (request_irq(fbdev->irq, s3cfb_irq_frame, IRQF_SHARED,
+			pdev->name, fbdev)) {
+		dev_err(fbdev->dev, "request_irq failed\n");
 		ret = -EINVAL;
 		goto err_irq;
 	}
-
 #if 1
 	// added by jamie (2009.08.18)
 	// enable VSYNC
@@ -1224,15 +1370,15 @@ static int s3cfb_probe(struct platform_device *pdev)
 #endif
 
 #ifdef CONFIG_FB_S3C_TRACE_UNDERRUN
-	if (request_irq(platform_get_irq(pdev, 1), s3cfb_irq_fifo, \
+	if (request_irq(platform_get_irq(pdev, 1), s3cfb_irq_fifo,
 			IRQF_DISABLED, pdev->name, fbdev)) {
-		err("request_irq failed\n");
+		dev_err(fbdev->dev, "request_irq failed\n");
 		ret = -EINVAL;
 		goto err_irq;
 	}
 
 	s3cfb_set_fifo_interrupt(fbdev, 1);
-	info("fifo underrun trace\n");
+	dev_info(fbdev->dev, "fifo underrun trace\n");
 #endif
 #ifdef CONFIG_FB_S3C_MDNIE
 	s3c_mdnie_setup();
@@ -1241,20 +1387,6 @@ static int s3cfb_probe(struct platform_device *pdev)
 	/* init global */
 	s3cfb_init_global();
 
-#if 0	
-/* removed temporally to test SLSI code */	
-//#ifndef CONFIG_ARIES_VER_B0
-	/* panel control */
-	if (pdata->backlight_on)
-		pdata->backlight_on(pdev);
-
-	if (pdata->reset_lcd)
-		pdata->reset_lcd(pdev);
-
-	if (fbdev->lcd->init_ldi)
-		fbdev->lcd->init_ldi();
-//#endif
-#endif
 	/* prepare memory */
 	if (s3cfb_alloc_framebuffer())
 		goto err_alloc;
@@ -1266,10 +1398,26 @@ static int s3cfb_probe(struct platform_device *pdev)
 #ifdef CONFIG_FB_S3C_MDNIE
    mDNIe_Mode_Set();
 #endif 
-	s3cfb_display_on(fbdev);
 	s3cfb_enable_window(pdata->default_win);
 
+	s3cfb_display_on(fbdev);
 
+#ifdef CONFIG_FB_S3C_LCD_INIT
+	/* panel control */
+
+#if !defined(CONFIG_MACH_S5PC110_ARIES)
+#if defined(CONFIG_FB_S3C_TL2796)
+	if (pdata->backlight_on)
+		pdata->backlight_on(pdev);
+#elif defined(CONFIG_FB_S3C_LTE480WV)
+	if (pdata->backlight_onoff)
+		pdata->backlight_onoff(pdev, 1);
+#endif
+
+	if (pdata->reset_lcd)
+		pdata->reset_lcd(pdev);
+#endif
+#endif	/* CONFIG_MACH_S5PC110_ARIES */
 #ifdef CONFIG_HAS_WAKELOCK
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	fbdev->early_suspend.suspend = s3cfb_early_suspend;
@@ -1281,15 +1429,20 @@ static int s3cfb_probe(struct platform_device *pdev)
 #endif
 #endif
 
-	ret = device_create_file(&(pdev->dev), &dev_attr_lcd_power);
-	if (ret < 0)
-		printk(KERN_WARNING "s3cfb: failed to add dev_attr_lcd_power\n");
-	
 	ret = device_create_file(&(pdev->dev), &dev_attr_win_power);
 	if (ret < 0)
-		err("failed to add sysfs entries\n");
+		dev_err(fbdev->dev, "failed to add sysfs entries\n");
 
-	info("registered successfully\n");
+	dev_info(fbdev->dev, "registered successfully\n");
+
+#if 0 //def CONFIG_CPU_FREQ
+	fbdev->freq_transition.notifier_call = s3cfb_freq_transition;
+	fbdev->freq_policy.notifier_call = s3cfb_freq_policy;
+	cpufreq_register_notifier(&fbdev->freq_transition,
+						CPUFREQ_TRANSITION_NOTIFIER);
+	cpufreq_register_notifier(&fbdev->freq_policy,
+						CPUFREQ_POLICY_NOTIFIER);
+#endif
 
 	return 0;
 
@@ -1300,10 +1453,7 @@ err_irq:
 	iounmap(fbdev->regs);
 
 err_io:
-	clk_disable(fbdev->clock);
-
-err_clk:
-	clk_put(fbdev->clock);
+	pdata->clk_off(pdev, &fbdev->clock);
 
 err_global:
 	return ret;
@@ -1312,9 +1462,9 @@ err_global:
 static int s3cfb_remove(struct platform_device *pdev)
 {
 	struct s3c_platform_fb *pdata = to_fb_plat(&pdev->dev);
+	struct s3cfb_window *win;
 	struct fb_info *fb;
 	int i;
-
 
 #ifdef CONFIG_HAS_WAKELOCK
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -1324,15 +1474,19 @@ static int s3cfb_remove(struct platform_device *pdev)
 
 	free_irq(fbdev->irq, fbdev);
 	iounmap(fbdev->regs);
-	clk_disable(fbdev->clock);
-	clk_put(fbdev->clock);
+	pdata->clk_off(pdev, &fbdev->clock);
 
 	for (i = 0; i < pdata->nr_wins; i++) {
 		fb = fbdev->fb[i];
 
 		/* free if exists */
 		if (fb) {
-			s3cfb_unmap_video_memory(fb);
+			win = fb->par;
+			if (win->id == pdata->default_win)
+				s3cfb_unmap_default_video_memory(fb);
+			else
+				s3cfb_unmap_video_memory(fb);
+
 			s3cfb_set_buffer_address(fbdev, i);
 			framebuffer_release(fb);
 		}
@@ -1343,180 +1497,40 @@ static int s3cfb_remove(struct platform_device *pdev)
 
 	return 0;
 }
-
-
-#ifdef CONFIG_PM 
-/*
-struct sleep_save s3c_lcd_save[] = {
-	SAVE_ITEM(S3C_VIDCON0),
-	SAVE_ITEM(S3C_VIDCON1),
-
-	SAVE_ITEM(S3C_VIDTCON0),
-	SAVE_ITEM(S3C_VIDTCON1),
-	SAVE_ITEM(S3C_VIDTCON2),
-
-	SAVE_ITEM(S3C_WINCON0),
-	SAVE_ITEM(S3C_WINCON1),
-	SAVE_ITEM(S3C_WINCON2),
-	SAVE_ITEM(S3C_WINCON3),
-	SAVE_ITEM(S3C_WINCON4),
-
-	SAVE_ITEM(S3C_VIDOSD0A),
-	SAVE_ITEM(S3C_VIDOSD0B),
-	SAVE_ITEM(S3C_VIDOSD0C),
-
-	SAVE_ITEM(S3C_VIDOSD1A),
-	SAVE_ITEM(S3C_VIDOSD1B),
-	SAVE_ITEM(S3C_VIDOSD1C),
-	SAVE_ITEM(S3C_VIDOSD1D),
-
-	SAVE_ITEM(S3C_VIDOSD2A),
-	SAVE_ITEM(S3C_VIDOSD2B),
-	SAVE_ITEM(S3C_VIDOSD2C),
-	SAVE_ITEM(S3C_VIDOSD2D),
-
-	SAVE_ITEM(S3C_VIDOSD3A),
-	SAVE_ITEM(S3C_VIDOSD3B),
-	SAVE_ITEM(S3C_VIDOSD3C),
-
-	SAVE_ITEM(S3C_VIDOSD4A),
-	SAVE_ITEM(S3C_VIDOSD4B),
-	SAVE_ITEM(S3C_VIDOSD4C),
-
-	SAVE_ITEM(S3C_VIDW00ADD0B0),
-	SAVE_ITEM(S3C_VIDW00ADD0B1),
-	SAVE_ITEM(S3C_VIDW01ADD0B0),
-	SAVE_ITEM(S3C_VIDW01ADD0B1),
-	SAVE_ITEM(S3C_VIDW02ADD0),
-	SAVE_ITEM(S3C_VIDW03ADD0),
-	SAVE_ITEM(S3C_VIDW04ADD0),
-	SAVE_ITEM(S3C_VIDW00ADD1B0),
-	SAVE_ITEM(S3C_VIDW00ADD1B1),
-	SAVE_ITEM(S3C_VIDW01ADD1B0),
-	SAVE_ITEM(S3C_VIDW01ADD1B1),
-	SAVE_ITEM(S3C_VIDW02ADD1),
-	SAVE_ITEM(S3C_VIDW03ADD1),
-	SAVE_ITEM(S3C_VIDW04ADD1),
-	SAVE_ITEM(S3C_VIDW00ADD2),
-	SAVE_ITEM(S3C_VIDW01ADD2),
-	SAVE_ITEM(S3C_VIDW02ADD2),
-	SAVE_ITEM(S3C_VIDW03ADD2),
-	SAVE_ITEM(S3C_VIDW04ADD2),
-
-	SAVE_ITEM(S3C_VIDINTCON0),
-	SAVE_ITEM(S3C_VIDINTCON1),
-	SAVE_ITEM(S3C_W1KEYCON0),
-	SAVE_ITEM(S3C_W1KEYCON1),
-	SAVE_ITEM(S3C_W2KEYCON0),
-	SAVE_ITEM(S3C_W2KEYCON1),
-
-	SAVE_ITEM(S3C_W3KEYCON0),
-	SAVE_ITEM(S3C_W3KEYCON1),
-	SAVE_ITEM(S3C_W4KEYCON0),
-	SAVE_ITEM(S3C_W4KEYCON1),
-	SAVE_ITEM(S3C_DITHMODE),
-
-	SAVE_ITEM(S3C_WIN0MAP),
-	SAVE_ITEM(S3C_WIN1MAP),
-	SAVE_ITEM(S3C_WIN2MAP),
-	SAVE_ITEM(S3C_WIN3MAP),
-	SAVE_ITEM(S3C_WIN4MAP),
-	SAVE_ITEM(S3C_WPALCON_H),
-	SAVE_ITEM(S3C_WPALCON_L),
-
-// LDI
-	SAVE_ITEM(S3C_TRIGCON),
-	SAVE_ITEM(S3C_I80IFCONA0),
-	SAVE_ITEM(S3C_I80IFCONA1),
-	SAVE_ITEM(S3C_I80IFCONB0),
-	SAVE_ITEM(S3C_I80IFCONB1),
-	SAVE_ITEM(S3C_LDI_CMDCON0),
-	SAVE_ITEM(S3C_LDI_CMDCON1),
-	SAVE_ITEM(S3C_SIFCCON0),
-	SAVE_ITEM(S3C_SIFCCON1),
-	SAVE_ITEM(S3C_SIFCCON2),
-
-	SAVE_ITEM(S3C_LDI_CMD0),
-	SAVE_ITEM(S3C_LDI_CMD1),
-	SAVE_ITEM(S3C_LDI_CMD2),
-	SAVE_ITEM(S3C_LDI_CMD3),
-	SAVE_ITEM(S3C_LDI_CMD4),
-	SAVE_ITEM(S3C_LDI_CMD5),
-	SAVE_ITEM(S3C_LDI_CMD6),
-	SAVE_ITEM(S3C_LDI_CMD7),
-	SAVE_ITEM(S3C_LDI_CMD8),
-	SAVE_ITEM(S3C_LDI_CMD9),
-	SAVE_ITEM(S3C_LDI_CMD10),
-	SAVE_ITEM(S3C_LDI_CMD11),
-// window pallette
-	SAVE_ITEM(S3C_W2PDATA01),
-	SAVE_ITEM(S3C_W2PDATA23),
-	SAVE_ITEM(S3C_W2PDATA45),
-	SAVE_ITEM(S3C_W2PDATA67),
-	SAVE_ITEM(S3C_W2PDATA89),
-	SAVE_ITEM(S3C_W2PDATAAB),
-	SAVE_ITEM(S3C_W2PDATACD),
-	SAVE_ITEM(S3C_W2PDATAEF),
-	SAVE_ITEM(S3C_W3PDATA01),
-	SAVE_ITEM(S3C_W3PDATA23),
-	SAVE_ITEM(S3C_W3PDATA45),
-	SAVE_ITEM(S3C_W3PDATA67),
-	SAVE_ITEM(S3C_W3PDATA89),
-	SAVE_ITEM(S3C_W3PDATAAB),
-	SAVE_ITEM(S3C_W3PDATACD),
-	SAVE_ITEM(S3C_W3PDATAEF),
-	SAVE_ITEM(S3C_W4PDATA01),
-	SAVE_ITEM(S3C_W4PDATA23),
-
-};*/
-
-#ifdef CONFIG_HAS_EARLYSUSPEND
-void s3cfb_early_suspend(struct early_suspend *h)
-{
-
-	struct s3cfb_global *info = container_of(h,struct s3cfb_global,early_suspend);
-
-	struct s3c_platform_fb *pdata = to_fb_plat(info->dev);
-	struct s3cfb_window *win;
-	int i;
-
-#if 0
-
-#ifdef CONFIG_FB_S3C_MDNIE
-	writel(0,fbdev->regs + 0x27c);
-	msleep(20);  // mdelay->msleep
-	writel(0x2, S5P_MDNIE_SEL);
-	s3c_mdnie_stop();
+#if defined (CONFIG_FB_S3C_TL2796)
+extern void tl2796_ldi_init(void);
+extern void tl2796_ldi_enable(void);
+extern void tl2796_ldi_disable(void);
 #endif
 
+#ifdef CONFIG_PM
+#ifdef CONFIG_HAS_EARLYSUSPEND
 
+#if defined(CONFIG_FB_S3C_TL2796)
+extern void lcd_cfg_gpio_early_suspend(void);
+#endif
 
-	for (i = 0; i < pdata->nr_wins; i++) {
-		win = info->fb[i]->par;
-		if (win->path == DATA_PATH_FIFO && win->suspend_fifo) {
-			if (win->suspend_fifo())
-				info("failed to run the suspend for fifo\n");
-		}
-	}
+void s3cfb_early_suspend(struct early_suspend *h)
+{
+	struct s3cfb_global *info = container_of(h,struct s3cfb_global,early_suspend);
+#if defined(CONFIG_FB_S3C_LTE480WV)
+	struct s3c_platform_fb *pdata = to_fb_plat(info->dev);	
+	struct platform_device *pdev = to_platform_device(info->dev);
+#endif
 
+	printk("s3cfb_early_suspend is called\n");
+
+#if defined (CONFIG_FB_S3C_LTE480WV)
+	if (pdata->backlight_onoff)
+		pdata->backlight_onoff(pdev, 0);
+#endif
+
+#if defined (CONFIG_FB_S3C_TL2796)
 	tl2796_ldi_disable();
-
-	s3cfb_display_off(info);
-#ifdef CONFIG_FB_S3C_MDNIE
-	s3c_mdnie_off();
-#endif 
-	clk_disable(info->clock);
-
-	return ;
-
-#else
-	msleep(20);
-	tl2796_ldi_disable();
-	
 //lcd_reset low
 	s3c_gpio_setpin(GPIO_MLCD_RST, 0);
 	msleep(20);
-
+#endif
 	#ifdef CONFIG_FB_S3C_MDNIE
 	writel(0,fbdev->regs + 0x27c);
 	msleep(20);  // mdelay->msleep
@@ -1524,74 +1538,60 @@ void s3cfb_early_suspend(struct early_suspend *h)
 	s3c_mdnie_stop();
 	#endif
 
-
-
-	for (i = 0; i < pdata->nr_wins; i++) {
-		win = info->fb[i]->par;
-		if (win->path == DATA_PATH_FIFO && win->suspend_fifo) {
-			if (win->suspend_fifo())
-				info("failed to run the suspend for fifo\n");
-		}
-	}
-
 	s3cfb_display_off(info);
 	#ifdef CONFIG_FB_S3C_MDNIE
 	s3c_mdnie_off();
 	#endif 
 	clk_disable(info->clock);
-	//printk("%s: fimd early_suspend ok!\n", __FUNCTION__);
-
-	return ;
+#if defined (CONFIG_FB_S3C_TL2796)
+	lcd_cfg_gpio_early_suspend();
 #endif
 
+	return ;
 }
 
-static void m_reset_lcd(void)
-{
-        gpio_set_value(S5PC11X_MP05(5), 0);
-        udelay(15);		
-        gpio_set_value(S5PC11X_MP05(5), 1);
-}
+#if defined(CONFIG_FB_S3C_TL2796)
+extern void lcd_cfg_gpio_late_resume(void);
+#endif
 
 void s3cfb_late_resume(struct early_suspend *h)
 {
-
 	struct s3cfb_global *info = container_of(h,struct s3cfb_global,early_suspend);
-
 	struct s3c_platform_fb *pdata = to_fb_plat(info->dev);
 	struct fb_info *fb;
 	struct s3cfb_window *win;
 	int i;
 	struct platform_device *pdev = to_platform_device(info->dev);
 
+	printk("s3cfb_late_resume is called\n");
+
+#if defined (CONFIG_FB_S3C_TL2796)
+	lcd_cfg_gpio_late_resume();
+#endif
 	dev_dbg(info->dev, "wake up from suspend\n");
-
-
 	if (pdata->cfg_gpio)
 		pdata->cfg_gpio(pdev);
 
-	if (pdata->backlight_on) 
-		pdata->backlight_on(pdev);
-	else 
-		printk("%s: no backlight_on function\n", __FUNCTION__);
-
-	if (pdata->reset_lcd)
-		pdata->reset_lcd(pdev);
-	else 
-		printk("%s: no backlight_on function\n", __FUNCTION__);
-
-#if 0 // commented by amit
-	if (info->lcd->init_ldi)
-		info->lcd->init_ldi();
-	else 
-		printk("%s: no init_ldi function\n", __FUNCTION__);
-#endif	
-
 	clk_enable(info->clock);
+
+#if defined(CONFIG_FB_S3C_DUMMYLCD)
+	max8698_ldo_enable_direct(MAX8698_LDO4);
+#endif
+
+
+#if defined (CONFIG_FB_S3C_LTE480WV)
+	if (info->lcd->init_ldi)
+		fbdev->lcd->init_ldi();
+	else
+		printk("no init_ldi\n");
+#endif
+	
+
 #ifdef CONFIG_FB_S3C_MDNIE
 	writel(0x1, S5P_MDNIE_SEL);
 	writel(3,fbdev->regs + 0x27c);
 #endif
+
 	s3cfb_init_global();
 	s3cfb_set_clock(info);
 
@@ -1604,43 +1604,48 @@ void s3cfb_late_resume(struct early_suspend *h)
 	for (i = 0; i < pdata->nr_wins; i++) {
 		fb = info->fb[i];
 		win = fb->par;
-
-		if (win->path == DATA_PATH_FIFO && win->resume_fifo) {
-			if (win->resume_fifo())
-				info("failed to run the resume for fifo\n");
-		} else {
-			if (win->enabled) {
-				s3cfb_check_var(&fb->var, fb);
-				s3cfb_set_par(fb);
-				s3cfb_enable_window(win->id);
-			}
+		if ((win->path == DATA_PATH_DMA) && (win->enabled)) {
+			s3cfb_set_par(fb);
+			s3cfb_enable_window(win->id);
 		}
 	}
-	m_reset_lcd();
 #if 1
-	// added by jamie (2009.08.18)
 	// enable VSYNC
 	s3cfb_set_vsync_interrupt(fbdev, 1);
 	s3cfb_set_global_interrupt(fbdev, 1);
 #endif
 
+#if defined (CONFIG_FB_S3C_TL2796)
+	if (pdata->backlight_on)
+		pdata->backlight_on(pdev);
+#endif
+
+#if !defined(CONFIG_FB_S3C_DUMMYLCD)
+	if (pdata->reset_lcd)
+		pdata->reset_lcd(pdev);
+#endif
+
+
+#if defined(CONFIG_FB_S3C_TL2796)
 	tl2796_ldi_init();
 	tl2796_ldi_enable();
+#endif
 
-	//printk("%s: fimd late_resume ok!\n", __FUNCTION__);
+
+#if defined (CONFIG_FB_S3C_LTE480WV)
+	if (pdata->backlight_onoff)
+		pdata->backlight_onoff(pdev, 1);
+#endif
+
+
+
 
 	return ;
-
 }
-
-#else  // else CONFIG_HAS_EARLYSUSPEND
-
+#else //else !CONFIG_HAS_EARLYSUSPEND
 int s3cfb_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct s3c_platform_fb *pdata = to_fb_plat(&pdev->dev);
-	struct s3cfb_window *win;
-	int i;
-
 #ifdef CONFIG_FB_S3C_MDNIE
 	writel(0,fbdev->regs + 0x27c);
 	//mdelay(20);
@@ -1648,20 +1653,16 @@ int s3cfb_suspend(struct platform_device *pdev, pm_message_t state)
 	writel(0x2, S5P_MDNIE_SEL);
 	s3c_mdnie_stop();
 #endif
-	for (i = 0; i < pdata->nr_wins; i++) {
-		win = fbdev->fb[i]->par;
-		if (win->path == DATA_PATH_FIFO && win->suspend_fifo) {
-			if (win->suspend_fifo())
-				info("failed to run the suspend for fifo\n");
-		}
-	}
+#if defined (CONFIG_FB_S3C_LTE480WV)
+	if (pdata->backlight_onoff)
+		pdata->backlight_onoff(pdev, 0);
+#endif
 
 	s3cfb_display_off(fbdev);
-
 #ifdef CONFIG_FB_S3C_MDNIE
 	s3c_mdnie_off();
 #endif 
-	clk_disable(fbdev->clock);
+	pdata->clk_off(pdev, &fbdev->clock);
 
 	return 0;
 }
@@ -1675,11 +1676,39 @@ int s3cfb_resume(struct platform_device *pdev)
 
 	dev_dbg(fbdev->dev, "wake up from suspend\n");
 
+	pdata->clk_on(pdev, &fbdev->clock);
+#ifdef CONFIG_FB_S3C_MDNIE
+	writel(0x1, S5P_MDNIE_SEL);
+	writel(3,fbdev->regs + 0x27c);
+#endif
+	s3cfb_init_global();
+	s3cfb_set_clock(fbdev);
+#ifdef CONFIG_FB_S3C_MDNIE
+	s3c_mdnie_init_global(fbdev);
+	s3c_mdnie_start(fbdev);
+#endif
+	s3cfb_display_on(fbdev);
+
+	for (i = 0; i < pdata->nr_wins; i++) {
+		fb = fbdev->fb[i];
+		win = fb->par;
+		if ((win->owner == DMA_MEM_FIMD) && (win->enabled)) {
+			s3cfb_set_win_params(win->id);
+			s3cfb_enable_window(win->id);
+		}
+	}
+
 	if (pdata->cfg_gpio)
 		pdata->cfg_gpio(pdev);
 
+#if defined(CONFIG_FB_S3C_TL2796)
 	if (pdata->backlight_on)
 		pdata->backlight_on(pdev);
+#elif defined (CONFIG_FB_S3C_LTE480WV)
+	if (pdata->backlight_onoff)
+		pdata->backlight_onoff(pdev, 1);
+#endif
+
 
 	if (pdata->reset_lcd)
 		pdata->reset_lcd(pdev);
@@ -1687,45 +1716,10 @@ int s3cfb_resume(struct platform_device *pdev)
 	if (fbdev->lcd->init_ldi)
 		fbdev->lcd->init_ldi();
 
-	clk_enable(fbdev->clock);
-
-#ifdef CONFIG_FB_S3C_MDNIE
-	writel(0x1, S5P_MDNIE_SEL);
-	writel(3,fbdev->regs + 0x27c);
-#endif
-	s3cfb_init_global();
-	s3cfb_set_clock(fbdev);
-
-#ifdef CONFIG_FB_S3C_MDNIE
-	s3c_mdnie_init_global(fbdev);
-	s3c_mdnie_start(fbdev);
-#endif 
-
-
-	s3cfb_display_on(fbdev);
-
-	for (i = 0; i < pdata->nr_wins; i++) {
-		fb = fbdev->fb[i];
-		win = fb->par;
-
-		if (win->path == DATA_PATH_FIFO && win->resume_fifo) {
-			if (win->resume_fifo())
-				info("failed to run the resume for fifo\n");
-		} else {
-			if (win->enabled) {
-				s3cfb_check_var(&fb->var, fb);
-				s3cfb_set_par(fb);
-				s3cfb_enable_window(win->id);
-			}
-		}
-	}
-
 	return 0;
 }
-#endif  // else CONFIG_HAS_EARLYSUSPEND
-
-#else // CONFIG_PM
-
+#endif
+#else
 #define s3cfb_suspend NULL
 #define s3cfb_resume NULL
 
@@ -1744,11 +1738,11 @@ static int s3cfb_shutdown(struct platform_Device *dev)
 }
 
 static struct platform_driver s3cfb_driver = {
-	.probe		= s3cfb_probe,
-	.remove		= s3cfb_remove,
-#ifndef CONFIG_HAS_EARLYSUSPEND 
-	.suspend		= s3cfb_suspend,
-	.resume		= s3cfb_resume,
+	.probe = s3cfb_probe,
+	.remove = s3cfb_remove,
+#ifndef CONFIG_HAS_EARLYSUSPEND
+	.suspend = s3cfb_suspend,
+	.resume = s3cfb_resume,
 #endif
 	.shutdown	= s3cfb_shutdown,
 
@@ -1772,8 +1766,8 @@ static void s3cfb_unregister(void)
 
 module_init(s3cfb_register);
 module_exit(s3cfb_unregister);
-	
+
+MODULE_AUTHOR("Jonghun, Han <jonghun.han@samsung.com>");
 MODULE_AUTHOR("Jinsung, Yang <jsgood.yang@samsung.com>");
 MODULE_DESCRIPTION("Samsung Display Controller (FIMD) driver");
 MODULE_LICENSE("GPL");
-

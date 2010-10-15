@@ -1,4 +1,4 @@
-cmd_scripts/conmakehash := gcc -Wp,-MD,scripts/.conmakehash.d -g -O2     -o scripts/conmakehash scripts/conmakehash.c  
+cmd_scripts/conmakehash := gcc -Wp,-MD,scripts/.conmakehash.d -g -O4     -o scripts/conmakehash scripts/conmakehash.c  
 
 deps_scripts/conmakehash := \
   scripts/conmakehash.c \

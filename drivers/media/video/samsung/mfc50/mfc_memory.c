@@ -44,12 +44,12 @@ unsigned char *mfc_get_fw_buff_vaddr(void)
 
 unsigned int mfc_get_port0_buff_paddr(void)
 {
-	return mfc_port0_base_paddr + MFC_FW_TOTAL_BUF_SIZE;
+	return mfc_port0_base_paddr + MFC_FW_MAX_SIZE;  
 }
 
 unsigned char *mfc_get_port0_buff_vaddr(void)
 {
-	return mfc_port0_base_vaddr + MFC_FW_TOTAL_BUF_SIZE;
+	return mfc_port0_base_vaddr + MFC_FW_MAX_SIZE;	
 }
 
 unsigned char *mfc_get_port1_buff_vaddr(void)

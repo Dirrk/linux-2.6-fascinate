@@ -24,6 +24,8 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <linux/err.h>
+#include <linux/types.h>
 
 #include <linux/usb/composite.h>
 #include "fsa9480_i2c.h"
@@ -45,6 +47,18 @@ static struct usb_composite_driver *composite;
  * published in the device descriptor, either numbers or strings or both.
  * String parameters are in UTF-8 (superset of ASCII's 7 bit characters).
  */
+
+extern int samsung_kies_mtp_mode_flag;
+
+struct os_string_descriptor_set {
+	char bLength;
+	char bDescType;
+	unsigned char qwsignature[14];
+	char bMS_VendorCode;
+	char bPad;
+} __attribute__ ((packed));	
+
+typedef struct os_string_descriptor_set os_string_descriptor_set;
 
 static ushort idVendor;
 module_param(idVendor, ushort, 0);
@@ -128,7 +142,6 @@ done:
 	return value;
 }
 
-
 /**
  * usb_function_deactivate - prevent function and gadget enumeration
  * @function: the function that isn't yet ready to respond
@@ -151,16 +164,17 @@ done:
 int usb_function_deactivate(struct usb_function *function)
 {
 	struct usb_composite_dev	*cdev = function->config->cdev;
+	unsigned long			flags;
 	int				status = 0;
 
-	spin_lock(&cdev->lock);
+	spin_lock_irqsave(&cdev->lock, flags);
 
 	if (cdev->deactivations == 0)
 		status = usb_gadget_disconnect(cdev->gadget);
 	if (status == 0)
 		cdev->deactivations++;
 
-	spin_unlock(&cdev->lock);
+	spin_unlock_irqrestore(&cdev->lock, flags);
 	return status;
 }
 
@@ -556,7 +570,7 @@ int usb_change_config(struct usb_composite_dev *cdev,
 	if (!list_empty(&cdev->configs)) 
 	{
 		c = list_first_entry(&cdev->configs, struct usb_configuration, list);
-		printk("[%s] list_del '%s'\n", __func__, c->label);
+		//printk("[%s] list_del '%s'\n", __func__, c->label);
 		list_del(&c->list);
 	} 
 
@@ -643,6 +657,7 @@ static int lookup_string(
 		s = *sp++;
 		if (s->language != language)
 			continue;
+		//printk("********* %s %d calling b_gadget_get_string language= 0x%x\n", __FUNCTION__, __LINE__, language);
 		value = usb_gadget_get_string(s, id, buf);
 		if (value > 0)
 			return value;
@@ -694,18 +709,58 @@ static int get_string(struct usb_composite_dev *cdev,
 		s->bLength = 2 * (len + 1);
 		return s->bLength;
 	}
+	else if (id == 0xEE)
+	{
+		if(samsung_kies_mtp_mode_flag == 1) {
+
+			printk("************ %s:%d samsung_kies_mtp_mode_flag:%d, id:0x%x\n",__func__,__LINE__, samsung_kies_mtp_mode_flag, id);
+
+		os_string_descriptor_set output;
+		struct usb_string_descriptor *os_desc = buf;
+
+		memset(os_desc, 0x00, 256);
+		os_desc->bDescriptorType = USB_DT_STRING;
+
+		output.qwsignature[0] = 0x4D;
+		output.qwsignature[1] = 0x00;
+		output.qwsignature[2] = 0x53;
+		output.qwsignature[3] = 0x00;
+		output.qwsignature[4] = 0x46;
+		output.qwsignature[5] = 0x00;
+		output.qwsignature[6] = 0x54;
+		output.qwsignature[7] = 0x00;
+		output.qwsignature[8] = 0x31;
+		output.qwsignature[9] = 0x00;
+		output.qwsignature[10] = 0x30;
+		output.qwsignature[11] = 0x00;
+		output.qwsignature[12] = 0x30;
+		output.qwsignature[13] = 0x00;
+
+
+		output.bMS_VendorCode = 0x54;
+		output.bPad = 0x00;
+		
+		memcpy(os_desc->wData, &output.qwsignature, sizeof(os_string_descriptor_set));
+
+		os_desc->bLength = 0x12; 
+
+		return os_desc->bLength;
+	}	
+	}	
 
 	/* Otherwise, look up and return a specified string.  String IDs
 	 * are device-scoped, so we look up each string table we're told
 	 * about.  These lookups are infrequent; simpler-is-better here.
 	 */
 	if (composite->strings) {
+		//printk("********* %s %d calling lookup_string language= 0x%x\n", __FUNCTION__, __LINE__, language);
 		len = lookup_string(composite->strings, buf, language, id);
 		if (len > 0)
 			return len;
 	}
 	list_for_each_entry(c, &cdev->configs, list) {
 		if (c->strings) {
+			//printk("********%s %d * calling lookup_string language= 0x%x\n", __FUNCTION__, __LINE__, language);
 			len = lookup_string(c->strings, buf, language, id);
 			if (len > 0)
 				return len;
@@ -713,6 +768,7 @@ static int get_string(struct usb_composite_dev *cdev,
 		list_for_each_entry(f, &c->functions, list) {
 			if (!f->strings)
 				continue;
+			//printk("********* %s %d calling lookup_string language= 0x%x\n", __FUNCTION__, __LINE__, language);
 			len = lookup_string(f->strings, buf, language, id);
 			if (len > 0)
 				return len;
@@ -772,6 +828,9 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	u16				w_value = le16_to_cpu(ctrl->wValue);
 	u16				w_length = le16_to_cpu(ctrl->wLength);
 	struct usb_function		*f = NULL;
+	char arr[38] = { 0x00, 0x00, 0x00, 0x01, 0x04, 0x00,0x01,0x00,0x00,0x00,0x00,0x00, 0x00, 0x00, 0x00, 0x01, 
+			 0x4D, 0x54, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
 	/* partial re-init of the response message; the function or the
 	 * gadget might need to intercept e.g. a control-OUT completion
@@ -784,6 +843,25 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 
 	switch (ctrl->bRequest) {
 
+	 case 0x54:
+		if(samsung_kies_mtp_mode_flag == 1) {
+
+			//printk("************ %s:%d USB_GET_MS_FUNCTION samsung_kies_mtp_mode_flag:%d \n",__func__, __LINE__, samsung_kies_mtp_mode_flag);
+
+		struct usb_string_descriptor *os_func_desc = req->buf;
+
+		os_func_desc->bDescriptorType = 0x00;
+
+		memcpy(os_func_desc->wData, &arr, 40);
+	 	
+		os_func_desc->bLength = value = 0x28;
+
+                	if (value >= 0) {
+                    value = min(w_length, (u16) value);
+			}
+		}
+		break; 
+
 	/* we handle all standard USB descriptors */
 	case USB_REQ_GET_DESCRIPTOR:
 		if (ctrl->bRequestType != USB_DIR_IN)
@@ -791,6 +869,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 		switch (w_value >> 8) {
 
 		case USB_DT_DEVICE:
+		//	printk("********* %s %d USB_REQ_GET_DESCRIPTOR: DT_DEVICE \n", __FUNCTION__, __LINE__);
 			cdev->desc.bNumConfigurations =
 				count_configs(cdev, USB_DT_DEVICE);
 			value = min(w_length, (u16) sizeof cdev->desc);
@@ -808,13 +887,17 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				break;
 			/* FALLTHROUGH */
 		case USB_DT_CONFIG:
+			//printk("********* %s %d USB_REQ_GET_DESCRIPTOR: DT_CONFIG \n", __FUNCTION__, __LINE__);
 			value = config_desc(cdev, w_value);
 			if (value >= 0)
 				value = min(w_length, (u16) value);
 			break;
 		case USB_DT_STRING:
+			//printk("********* %s %d USB_REQ_GET_DESCRIPTOR: calling get_string w_index =0x%x w_value = 0x%x \n", __FUNCTION__, __LINE__, w_index , w_value);
+			/* OS String Descriptor Request is issue by the PC hence respond back */
 			value = get_string(cdev, req->buf,
 					w_index, w_value & 0xff);
+
 			if (value >= 0)
 				value = min(w_length, (u16) value);
 			break;
@@ -823,6 +906,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 
 	/* any number of configs can work */
 	case USB_REQ_SET_CONFIGURATION:
+		//printk("********* %s %d USB_REQ_SET_CONFIGURATION: \n", __FUNCTION__, __LINE__);
 		if (ctrl->bRequestType != 0)
 			goto unknown;
 		if (gadget_is_otg(gadget)) {
@@ -838,6 +922,8 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 		spin_unlock(&cdev->lock);
 		break;
 	case USB_REQ_GET_CONFIGURATION:
+		//printk("********* %s %d USB_REQ_GET_CONFIGURATION: \n", __FUNCTION__, __LINE__);
+
 		if (ctrl->bRequestType != USB_DIR_IN)
 			goto unknown;
 		if (cdev->config) {
@@ -851,6 +937,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	 * no get() method, we know only altsetting zero works.
 	 */
 	case USB_REQ_SET_INTERFACE:
+		//printk("********* %s %d USB_REQ_SET_INTERFACE: \n", __FUNCTION__, __LINE__);
 		if (ctrl->bRequestType != USB_RECIP_INTERFACE)
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
@@ -863,6 +950,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 		value = f->set_alt(f, w_index, w_value);
 		break;
 	case USB_REQ_GET_INTERFACE:
+		//printk("********* %s %d USB_REQ_GET_INTERFACE: \n", __FUNCTION__, __LINE__);
 		if (ctrl->bRequestType != (USB_DIR_IN|USB_RECIP_INTERFACE))
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
@@ -946,7 +1034,11 @@ ep_queueing:
 	if (value >= 0) {
 		req->length = value;
 		req->zero = value < w_length;
+
+		//printk("********* %s %d \n", __FUNCTION__, __LINE__);
+
 		value = usb_ep_queue(gadget->ep0, req, GFP_ATOMIC);
+
 		if (value < 0) {
 			DBG(cdev, "ep_queue --> %d\n", value);
 			req->status = 0;

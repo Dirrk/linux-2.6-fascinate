@@ -1,4 +1,4 @@
-cmd_scripts/kallsyms := gcc -Wp,-MD,scripts/.kallsyms.d -g -O2     -o scripts/kallsyms scripts/kallsyms.c  
+cmd_scripts/kallsyms := gcc -Wp,-MD,scripts/.kallsyms.d -g -O4     -o scripts/kallsyms scripts/kallsyms.c  
 
 deps_scripts/kallsyms := \
   scripts/kallsyms.c \

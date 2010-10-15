@@ -313,7 +313,7 @@ typedef unsigned char		BOOLEAN;
 //----------------------------------------------------
 
 int mcsdl_download_binary_data(void);			// with binary type .c   file.
-int mcsdl_download_binary_file(void);			// with binary type .bin file.
+int mcsdl_download_binary_file(UINT8 *pData, UINT16 nBinary_length);			// with binary type .bin file.
 
 #if MELFAS_ENABLE_DELAY_TEST					// For initial porting test.
 void mcsdl_delay_test(INT32 nCount);

@@ -1,4 +1,4 @@
-cmd_scripts/basic/docproc := gcc -Wp,-MD,scripts/basic/.docproc.d -g -O2     -o scripts/basic/docproc scripts/basic/docproc.c  
+cmd_scripts/basic/docproc := gcc -Wp,-MD,scripts/basic/.docproc.d -g -O4     -o scripts/basic/docproc scripts/basic/docproc.c  
 
 deps_scripts/basic/docproc := \
   scripts/basic/docproc.c \

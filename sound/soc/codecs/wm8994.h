@@ -15,8 +15,6 @@ extern struct snd_soc_codec_device soc_codec_dev_wm8994;
 // We don't use array	- DW Shim.
 //extern struct snd_soc_dai wm8994_dai[];
 
-#define FEATURE_SS_AUDIO_CAL
-
 /* Sources for AIF1/2 SYSCLK - use with set_dai_sysclk() */
 #define WM8994_SYSCLK_MCLK1 1
 #define WM8994_SYSCLK_MCLK2 2
@@ -36,12 +34,12 @@ extern struct snd_soc_dai wm8994_dai;
 #define WM8994_SYSCLK_MCLK     1
 #define WM8994_SYSCLK_FLL      2
 
-#define AUDIO_COMMON_DEBUG 1
+#define AUDIO_COMMON_DEBUG 0
 #define SET_AUDIO_LOG
 //#define WM8994_REGISTER_DUMP
-
+#if defined CONFIG_SND_SOC_WM8994_PCM
 #define ATTACH_ADDITINAL_PCM_DRIVER	// for VT call.
-
+#endif
 //------------------------------------------------
 // Definitions of enum type
 //------------------------------------------------
@@ -71,13 +69,6 @@ enum state{OFF, ON};
 #define CMD_RECOGNITION_ACTIVE		5	// Distingush recognition gain. To use MIC gain for recognition.
 #define CMD_CALL_FLAG_CLEAR		6	// Call flag clear for shutdown - to reduce pop up noise.
 #define CMD_CALL_END			7	// Codec off in call mode - to reduce pop up noise.
-
-#define TTY_MODE_OFF    0
-#define TTY_MODE_FULL   1
-#define TTY_MODE_HCO    2
-#define TTY_MODE_VCO    3
-#define LOOPBACK_MODE_OFF 0
-#define LOOPBACK_MODE_ON 1
 
 typedef void (*select_route)(struct snd_soc_codec *);
 typedef void (*select_mic_route)(struct snd_soc_codec *);
@@ -118,7 +109,7 @@ extern unsigned int gbAudioLogEnable;		// This variable must be defined in cpufr
 
 #if AUDIO_COMMON_DEBUG
 #define DEBUG_LOG(format,...)\
-	printk (KERN_ERR "[%s, %d]   " format "\n", __func__, __LINE__, ## __VA_ARGS__);
+	printk ("[ "SUBJECT " (%s,%d) ] " format "\n", __func__, __LINE__, ## __VA_ARGS__);
 #define DEBUG_LOG_INFO(format,...)\
 	printk (KERN_DEBUG "[ "SUBJECT " (%s,%d) ] " format "\n", __func__, __LINE__, ## __VA_ARGS__);
 #else
@@ -145,7 +136,6 @@ void wm8994_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *co
 int audio_init(void);
 int audio_power(int en);
 void audio_ctrl_mic_bias_gpio(int enable);
-void audio_ctrl_mic1_bias_gpio(int enable);
 void wm8994_set_off(struct snd_soc_codec *codec);
 void wm8994_disable_playback_path(struct snd_soc_codec *codec, enum playback_path path);
 void wm8994_disable_fmradio_path(struct snd_soc_codec *codec, enum fmradio_path path);
@@ -173,9 +163,4 @@ void wm8994_set_fmradio_speaker_headset_mix(struct snd_soc_codec *codec);
 #if defined WM8994_REGISTER_DUMP
 void wm8994_register_dump(struct snd_soc_codec *codec);
 #endif
-void wm8994_mute_voicecall_path(struct snd_soc_codec *codec, int path);
-void wm8994_set_end_point_volume(struct snd_soc_codec *codec, int path);
-void wm8994_set_playback_vps(struct snd_soc_codec *codec);
-void wm8994_set_voicecall_vps(struct snd_soc_codec *codec);
-void wm8994_set_vps_related_output_path(int enable);
 #endif

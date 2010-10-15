@@ -1,6 +1,3 @@
-#include <linux/delay.h>
-#include <linux/i2c.h>
-
 /* Slave address */
 #define MAX17040_SLAVE_ADDR	0x6D
 
@@ -16,28 +13,27 @@
 #define CMD0_REG			0xFE
 #define CMD1_REG			0xFF
 
+#if defined(CONFIG_ARIES_NTT)
+unsigned int FGPureSOC = 0;
+unsigned int prevFGSOC = 0;
+unsigned int fg_zero_count = 0;
+#endif
+
+int fuel_guage_init = 0;
+EXPORT_SYMBOL(fuel_guage_init);
+
 static struct i2c_driver fg_i2c_driver;
 static struct i2c_client *fg_i2c_client = NULL;
 
-#if (defined CONFIG_ARIES_VER_B0 ) || (defined CONFIG_ARIES_VER_B1) || (defined CONFIG_ARIES_VER_B2) || (defined CONFIG_ARIES_VER_B3)
-unsigned short fg_ignore[] = {I2C_CLIENT_END };
-static unsigned short fg_normal_i2c[] = {I2C_CLIENT_END };
-static unsigned short fg_probe[] = {9, (MAX17040_SLAVE_ADDR >> 1), I2C_CLIENT_END };
-#else
-static unsigned short fg_normal_i2c[] = { I2C_CLIENT_END };
-static unsigned short fg_ignore[] = { I2C_CLIENT_END };
-static unsigned short fg_probe[] = { 4, (MAX17040_SLAVE_ADDR >> 1), I2C_CLIENT_END };
-#endif
-
-static struct i2c_client_address_data fg_addr_data = {
-	.normal_i2c	= fg_normal_i2c,
-	.ignore		= fg_ignore,
-	.probe		= fg_probe,
+struct fg_state{
+	struct i2c_client	*client;	
 };
 
-static int is_reset_soc = 0;
 
-extern unsigned int charging_mode_get(void);	// hanapark_Atlas (VCELL compensation)
+struct fg_state *fg_state;
+
+
+static int is_reset_soc = 0;
 
 static int fg_i2c_read(struct i2c_client *client, u8 reg, u8 *data)
 {
@@ -88,17 +84,11 @@ static int fg_i2c_write(struct i2c_client *client, u8 reg, u8 *data)
 	return 0;
 }
 
-#define VCELL_OFFSET_DEFAULT	20	// DE26 (30 -> 0 -> 15 -> 20)
-#define VCELL_OFFSET_DEFAULT_LPM	15	// DE26 (50 -> 30 -> 15)
-
 unsigned int fg_read_vcell(void)
 {
 	struct i2c_client *client = fg_i2c_client;
 	u8 data[2];
 	u32 vcell = 0;
-
-	if(fg_i2c_client==NULL)
-		return -1;
 
 	if (fg_i2c_read(client, VCELL0_REG, &data[0]) < 0) {
 		pr_err("%s: Failed to read VCELL0\n", __func__);
@@ -110,11 +100,6 @@ unsigned int fg_read_vcell(void)
 	}
 	vcell = ((((data[0] << 4) & 0xFF0) | ((data[1] >> 4) & 0xF)) * 125)/100;
 	//pr_info("%s: VCELL=%d\n", __func__, vcell);
-
-	if (charging_mode_get())
-		vcell += VCELL_OFFSET_DEFAULT_LPM;	// hanapark_Atlas
-	else
-		vcell += VCELL_OFFSET_DEFAULT;	// hanapark_Atlas
 	return vcell;
 }
 
@@ -142,6 +127,66 @@ unsigned int fg_read_soc(void)
 	
 	// calculating soc
 	FGPureSOC = data[0]*100+((data[1]*100)/256);
+
+#if defined(CONFIG_ARIES_NTT)
+
+#if 1 /* test7, DF06, change the rcomp to C0 */
+	if(FGPureSOC >= 60)
+	{
+		if(FGPureSOC >= 460)
+		{
+			FGAdjustSOC = (FGPureSOC - 460)*8650/8740 + 1350;
+		}
+		else
+		{
+			FGAdjustSOC = (FGPureSOC - 60)*1350/400;
+		}
+
+		if(FGAdjustSOC < 100)
+			FGAdjustSOC = 100; //1%
+	}
+	else
+	{
+		FGAdjustSOC = 0; //0%
+	}
+#endif
+
+	// rounding off and Changing to percentage.
+	FGSOC=FGAdjustSOC/100;
+
+	if(FGAdjustSOC%100 >= 50 )
+	{
+		FGSOC+=1;
+	}
+
+	if(FGSOC>=100)
+	{
+		FGSOC=100;
+	}
+
+	/* we judge real 0% after 3 continuous counting */
+	if(FGSOC == 0)
+	{
+		fg_zero_count++;
+
+		if(fg_zero_count >= 3)
+		{
+			FGSOC = 0;
+			fg_zero_count = 0;
+		}
+		else
+		{
+			FGSOC = prevFGSOC;
+		}
+	}
+	else
+	{
+		fg_zero_count=0;
+	}
+
+	prevFGSOC = FGSOC;
+
+#else // CONFIG_ARIES_NTT
 
 	if(FGPureSOC >= 100)
 	{
@@ -177,6 +222,8 @@ unsigned int fg_read_soc(void)
 		FGSOC=100;
 	}
 
+#endif // CONFIG_ARIES_NTT
+
 	return FGSOC;
 	
 }
@@ -206,12 +253,14 @@ void fuel_gauge_rcomp(void)
 	struct i2c_client *client = fg_i2c_client;
 	u8 rst_cmd[2];
 	s32 ret = 0;
-
-	if(fg_i2c_client==NULL)
-		return -1;
-
+	
+#if defined(CONFIG_ARIES_NTT)
+	rst_cmd[0] = 0xC0;
+	rst_cmd[1] = 0x00;
+#else
 	rst_cmd[0] = 0xB0;
 	rst_cmd[1] = 0x00;
+#endif
 
 	ret = fg_i2c_write(client, RCOMP0_REG, rst_cmd);
 	if (ret)
@@ -220,71 +269,50 @@ void fuel_gauge_rcomp(void)
 	//msleep(500);
 }
 
-
-static int fg_attach(struct i2c_adapter *adap, int addr, int kind)
+static int fg_i2c_remove(struct i2c_client *client)
 {
-	struct i2c_client *c;
-	int ret;
-
-	pr_info("%s\n", __func__);
-
-	c = kmalloc(sizeof(*c), GFP_KERNEL);
-	if (!c)
-		return -ENOMEM;
-
-	memset(c, 0, sizeof(struct i2c_client));
-
-	strncpy(c->name, fg_i2c_driver.driver.name, I2C_NAME_SIZE);
-	c->addr = addr;
-	c->adapter = adap;
-	c->driver = &fg_i2c_driver;
-
-	if ((ret = i2c_attach_client(c)))
-		goto error;
-
-	fg_i2c_client = c;
-
-error:
-	return ret;
-}
-
-static int fg_attach_adapter(struct i2c_adapter *adap)
-{
-	//pr_info("%s\n", __func__);
-	return i2c_probe(adap, &fg_addr_data, fg_attach);
-}
-
-static int fg_detach_client(struct i2c_client *client)
-{
-	pr_info("%s\n", __func__);
-	i2c_detach_client(client);
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+		return -ENODEV;
+	fg_i2c_client = client;
 	return 0;
 }
 
+static int fg_i2c_probe(struct i2c_client *client,  const struct i2c_device_id *id)
+{
+	struct fg_state *fg;
+
+	fg = kzalloc(sizeof(struct fg_state), GFP_KERNEL);
+	if (fg == NULL) {		
+		printk("failed to allocate memory \n");
+		return -ENOMEM;
+	}
+	
+	fg->client = client;
+	i2c_set_clientdata(client, fg);
+	
+	/* rest of the initialisation goes here. */
+	
+	printk("Fuel guage attach success!!!\n");
+
+	fg_i2c_client = client;
+
+	fuel_guage_init = 1;
+
+	return 0;
+}
+
+static const struct i2c_device_id fg_device_id[] = {
+	{"fuelgauge", 0},
+	{}
+};
+MODULE_DEVICE_TABLE(i2c, fg_device_id);
+
 static struct i2c_driver fg_i2c_driver = {
 	.driver = {
-		.name = "Fuel Gauge I2C",
+		.name = "fuelgauge",
 		.owner = THIS_MODULE,
 	},
-	.id 		= 0,
-	.attach_adapter	= fg_attach_adapter,
-	.detach_client	= fg_detach_client,
-	.command	= NULL,
+	.probe	= fg_i2c_probe,
+	.remove	= fg_i2c_remove,
+	.id_table	= fg_device_id,
 };
-
-int fg_init(void)
-{
-	int ret;
-
-	ret = i2c_add_driver(&fg_i2c_driver);
-	if (ret)
-		pr_err("%s: Can't add fg i2c drv\n", __func__);
-
-	return ret;
-}
-
-void fg_exit(void)
-{
-	i2c_del_driver(&fg_i2c_driver);
-}
-

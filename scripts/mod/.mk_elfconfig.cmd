@@ -1,4 +1,4 @@
-cmd_scripts/mod/mk_elfconfig := gcc -Wp,-MD,scripts/mod/.mk_elfconfig.d -g -O2     -o scripts/mod/mk_elfconfig scripts/mod/mk_elfconfig.c  
+cmd_scripts/mod/mk_elfconfig := gcc -Wp,-MD,scripts/mod/.mk_elfconfig.d -g -O4     -o scripts/mod/mk_elfconfig scripts/mod/mk_elfconfig.c  
 
 deps_scripts/mod/mk_elfconfig := \
   scripts/mod/mk_elfconfig.c \

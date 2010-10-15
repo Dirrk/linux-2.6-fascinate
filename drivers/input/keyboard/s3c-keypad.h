@@ -23,32 +23,13 @@ static void __iomem *key_base;
 #define KEYPAD_ROWS	8
 #define MAX_KEYPAD_NR	112
 
-#elif defined (CONFIG_MACH_S5PC110_JUPITER)
+#elif defined (CONFIG_MACH_S5PC110_ARIES)
 
-#if defined(CONFIG_JUPITER_VER_B4)
- #define KEYPAD_COLUMNS	4
- #define KEYPAD_ROWS	3
- #define MAX_KEYPAD_NR	12
-#elif defined (CONFIG_JUPITER_VER_B5) 
- #define KEYPAD_COLUMNS	3
- #define KEYPAD_ROWS	3
- #define MAX_KEYPAD_NR	9
- #elif defined (CONFIG_ARIES_VER_B3)
-   #define KEYPAD_COLUMNS	2
- #define KEYPAD_ROWS	3
- #define MAX_KEYPAD_NR	6
- #elif defined (CONFIG_ARIES_VER_B0) || (defined CONFIG_ARIES_VER_B1)  || (defined CONFIG_ARIES_VER_B2)
-  #define KEYPAD_COLUMNS	2 
- #define KEYPAD_ROWS	3
- #define MAX_KEYPAD_NR	9
-#else
+   #define KEYPAD_COLUMNS       2
+ #define KEYPAD_ROWS    3
+ #define MAX_KEYPAD_NR  6
 
- #define KEYPAD_COLUMNS	4
- #define KEYPAD_ROWS	4
- #define MAX_KEYPAD_NR	16
-#endif /* CONFIG_JUPITER_VER_B4 */
-
-#elif defined (CONFIG_MACH_SMDKC110 )
+#elif defined (CONFIG_MACH_SMDKC110 ) || defined (CONFIG_MACH_S5PC110_P1)
 
 #define KEYPAD_COLUMNS	8
 #define KEYPAD_ROWS	8
@@ -78,27 +59,10 @@ int keypad_keycode[] = {
 		12,  106, 11,  25,  26,  39,  53, 103,      //103				
 		14,  106,  3,  14,  27,  43,  40,  28,      //111			
 
-#elif defined (CONFIG_MACH_S5PC110_JUPITER)
-
-#if defined(CONFIG_JUPITER_VER_B4)
-        50,2,3,34,58,42,42,8,
-        26,10,11,50,13,14,50,16,
-#elif defined(CONFIG_JUPITER_VER_B5)  
-		50,2,3,34,58,42,34,8,
-		26,10,11,50,13,14,50,16,
-#elif defined (CONFIG_ARIES_VER_B3)
+#elif defined (CONFIG_MACH_S5PC110_ARIES)
               50,0,0,0,58,42,
-#elif defined(CONFIG_ARIES_VER_B0) || (defined CONFIG_ARIES_VER_B1)  || (defined CONFIG_ARIES_VER_B2)
-		50,2,3,34,58,42,34,8,
-		26,10,11,50,13,14,50,16,
-#else // b3
-		50,2,3,4,34,58,42,8,
-		9,10,11,12,13,14,50,16,
-		17,18,19,20,21,22,23,24,
-		25,26,27,28,29,30,31,32,
-#endif /*B4 */
 
-#elif defined (CONFIG_MACH_SMDKC110 )
+#elif defined (CONFIG_MACH_SMDKC110)
 		1,2,3,4,5,6,7,8,
 		9,10,11,12,13,14,15,16,
 		17,18,19,20,21,22,23,24,
@@ -126,7 +90,7 @@ int keypad_keycode[] = {
 
 #if CONFIG_ANDROID
 #ifdef CONFIG_CPU_S3C6410
-#define KEYPAD_ROW_GPIOCON      S3C64XX_GPKCON1
+#define KEYPAD_ROW_GPIOCON      S3C64XX_GPKCON
 #define KEYPAD_ROW_GPIOPUD      S3C64XX_GPKPUD
 #define KEYPAD_COL_GPIOCON      S3C64XX_GPLCON
 #define KEYPAD_COL_GPIOPUD      S3C64XX_GPLPUD
@@ -135,17 +99,17 @@ int keypad_keycode[] = {
 #define KEYPAD_ROW_GPIOPUD      S5PC1XX_GPH3PUD
 #define KEYPAD_COL_GPIOCON      S5PC1XX_GPH2CON
 #define KEYPAD_COL_GPIOPUD      S5PC1XX_GPH2PUD
-#elif defined( CONFIG_CPU_S5PC110 )
-#define KEYPAD_ROW_GPIOCON      S5PC11X_GPH3CON
-#define KEYPAD_ROW_GPIOPUD      S5PC11X_GPH3PUD
-#define KEYPAD_COL_GPIOCON      S5PC11X_GPH2CON
-#define KEYPAD_COL_GPIOPUD      S5PC11X_GPH2PUD
+#elif defined( CONFIG_CPU_S5PC110 ) || defined (CONFIG_CPU_S5PV210 )
+#define KEYPAD_ROW_GPIOCON      S5PV210_GPH3CON
+#define KEYPAD_ROW_GPIOPUD      S5PV210_GPH3PUD
+#define KEYPAD_COL_GPIOCON      S5PV210_GPH2CON
+#define KEYPAD_COL_GPIOPUD      S5PV210_GPH2PUD
 #endif
 #endif /* CONFIG_ANDROID */
 
-#ifdef CONFIG_CPU_S3C6410
+#if defined(CONFIG_CPU_S3C6410)
 #define KEYPAD_DELAY		(50)
-#elif CONFIG_CPU_S5PC100 || CONFIG_CPU_S5PC110
+#elif defined(CONFIG_CPU_S5PC100) || defined(CONFIG_CPU_S5PC110) || defined(CONFIG_CPU_S5PV210)
 #define KEYPAD_DELAY		(300)  //600
 #endif
 

@@ -18,7 +18,7 @@
 #include <linux/gpio.h>
 #include <mach/hardware.h>
 #include <plat/gpio-cfg.h>
-#include <plat/regs-gpio.h>
+//#include <plat/regs-gpio.h> /* TODO */
 #include <linux/wakelock.h>
 
 #include <linux/input.h>
@@ -26,6 +26,9 @@
 #include <asm/uaccess.h>
 
 //#include <linux/regulator/max8998_function.h>
+
+
+
 
 #include "gp2a.h"
 
@@ -38,9 +41,10 @@
 /*******************************************************************************/
 
 
-/* global var */
-static struct i2c_client *opt_i2c_client = NULL;
 
+
+
+/* global var */
 struct class *lightsensor_class;
 
 struct device *switch_cmd_dev;
@@ -64,16 +68,19 @@ static struct wake_lock prx_wake_lock;
 //static bool light_init_check = false;
 //static int light_init_check_count = 0;
 
-static int light_init_period = 4;
-static ktime_t timeA,timeB,timeSub;
+//static int light_init_period = 4;
+static ktime_t timeA,timeB; /* timeSub; */
 
-static struct i2c_driver opt_i2c_driver = {
-	.driver = {
-		.name = "gp2a",
-	},
-	//.id = GP2A_ID,
-	.attach_adapter = &opt_attach_adapter,
+
+static struct i2c_driver opt_i2c_driver;
+static struct i2c_client *opt_i2c_client = NULL;
+
+struct opt_state{
+	struct i2c_client	*client;	
 };
+
+struct opt_state *opt_state;
+
 
 static ssize_t proximity_read(struct file *filp, char *buf, size_t count, loff_t *f_pos);
 static int proximity_onoff(u8 onoff);
@@ -104,24 +111,6 @@ static struct miscdevice light_device = {
     .minor  = MISC_DYNAMIC_MINOR,
     .name   = "light",
     .fops   = &light_fops,
-};
-
-
-#if (defined CONFIG_ARIES_VER_B0) ||(defined CONFIG_ARIES_VER_B1) || (defined CONFIG_ARIES_VER_B2)  || (defined CONFIG_ARIES_VER_B3)
-static unsigned short opt_ignore[] = {I2C_CLIENT_END};
-static unsigned short opt_normal_i2c[] = {I2C_CLIENT_END};
-static unsigned short opt_probe[] = {11,(GP2A_ADDR>>1),I2C_CLIENT_END};
-#else
-static unsigned short opt_normal_i2c[] = {(GP2A_ADDR>>1),I2C_CLIENT_END};
-static unsigned short opt_ignore[] = {1,(GP2A_ADDR>>1),I2C_CLIENT_END};
-static unsigned short opt_probe[] = {I2C_CLIENT_END};
-#endif
-
-
-static struct i2c_client_address_data opt_addr_data = {
-	.normal_i2c = opt_normal_i2c,
-	.ignore		= opt_ignore,
-	.probe		= opt_probe,	
 };
 
 short gp2a_get_proximity_value()
@@ -159,8 +148,7 @@ static int buffering = 2;
 
 extern int backlight_level;
 
-#define MDNIE_TUNINGMODE_FOR_BACKLIGHT
-#ifdef MDNIE_TUNINGMODE_FOR_BACKLIGHT
+#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
 int pre_val = -1;
 extern int current_gamma_value;
 extern u16 *pmDNIe_Gamma_set[];
@@ -185,14 +173,10 @@ int value_buf[4] = {0};
 int IsChangedADC(int val)
 {
 	int j = 0;
-	int i = 0;
 	int ret = 0;
-
-	int adc_total = 0;
 
 	int adc_index = 0;
 	static int adc_index_count = 0;
-
 
 
 	adc_index = (adc_index_count)%4;		
@@ -222,13 +206,12 @@ int IsChangedADC(int val)
 }
 #endif
 
+//#if defined(CONFIG_ARIES_EUR)
+#if 1
 static void gp2a_work_func_light(struct work_struct *work)
 {
 	int adc=0;
-	int i;
 	state_type level_state = LIGHT_INIT;
-
-	int val = 0;
 
 	/* read adc data from s5p110 */
 	adc = lightsensor_get_adcvalue();
@@ -241,7 +224,6 @@ static void gp2a_work_func_light(struct work_struct *work)
 		level_state = LIGHT_LEVEL5;
 		buffering = 5;
 	}
-
 	else if(adc >= 1900 && adc < 2100)
 	{
 		if(buffering == 5)
@@ -268,14 +250,14 @@ static void gp2a_work_func_light(struct work_struct *work)
 		{	
 			level_state = LIGHT_LEVEL4;
 			buffering = 4;
-	}
+		}
 		else if((buffering == 1)||(buffering == 2)||(buffering == 3))
 		{
 			level_state = LIGHT_LEVEL3;
 			buffering = 3;
+		}
 	}
-	}
-
+	
 	else if(adc >= 800 && adc < 1200)
 	{
 		level_state = LIGHT_LEVEL3;
@@ -288,12 +270,12 @@ static void gp2a_work_func_light(struct work_struct *work)
 		{	
 			level_state = LIGHT_LEVEL3;
 			buffering = 3;
-	}
+		}
 		else if((buffering == 1)||(buffering == 2))
 		{
 			level_state = LIGHT_LEVEL2;
 			buffering = 2;
-	}
+		}
 	}
 
 	else if(adc >= 400 && adc < 600)
@@ -301,19 +283,19 @@ static void gp2a_work_func_light(struct work_struct *work)
 		level_state = LIGHT_LEVEL2;
 		buffering = 2;
 	}
-
+	
 	else if(adc >= 250 && adc < 400)
 	{
 		if((buffering == 2)||(buffering == 3)||(buffering == 4)||(buffering == 5))
 		{	
-		level_state = LIGHT_LEVEL2;
+			level_state = LIGHT_LEVEL2;
 			buffering = 2;
-	}
+		}
 		else if(buffering == 1)
 		{
-		level_state = LIGHT_LEVEL1;
+			level_state = LIGHT_LEVEL1;
 			buffering = 1;
-	}
+		}
 	}
 
 	else if(adc < 250)
@@ -322,26 +304,136 @@ static void gp2a_work_func_light(struct work_struct *work)
 		buffering = 1;
 	}
 #endif
-	if(!lightsensor_test)
+	if((backlight_level > 5)&&(!lightsensor_test))
 	{
 		gprintk("backlight_level = %d\n", backlight_level); //Temp
 		cur_state = level_state;	
 	}
-#ifdef MDNIE_TUNINGMODE_FOR_BACKLIGHT
+#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
 	if(autobrightness_mode)
 	{
 		if((pre_val!=1)&&(current_gamma_value == 24)&&(level_state == LIGHT_LEVEL5)&&(current_mDNIe_UI == mDNIe_UI_MODE))
-			{
+		{	
 			mDNIe_Mode_set_for_backlight(pmDNIe_Gamma_set[1]);
 			pre_val = 1;
 			gprintk("mDNIe_Mode_set_for_backlight - pmDNIe_Gamma_set[1]\n" );
-		}	
+		}
 	}
 #endif
 		
 	
 	gprintk("cur_state = %d\n",cur_state); //Temp
 }
+
+#else // Modify NTTS1
+static void gp2a_work_func_light(struct work_struct *work)
+{
+	int adc=0;
+	state_type level_state = LIGHT_INIT;
+
+	/* read adc data from s5p110 */
+	adc = lightsensor_get_adcvalue();
+	gprintk("Optimized adc = %d \n",adc);
+	gprintk("cur_state = %d\n",cur_state);
+	gprintk("light_enable = %d\n",light_enable);
+#if 0
+	if(adc >= 1500)
+		level_state = LIGHT_LEVEL3;
+
+	else if(adc >= 100 && adc < 1500){
+		level_state = LIGHT_LEVEL2;
+	}
+
+	else if(adc < 100){
+		level_state = LIGHT_LEVEL1;
+	}
+#else
+	if(adc >= 2100)
+	{
+		level_state = LIGHT_LEVEL4;
+		buffering = 4;
+	}
+
+	else if(adc >= 1900 && adc < 2100)
+	{
+		if(buffering == 4)
+		{	
+			level_state = LIGHT_LEVEL4;
+			buffering = 4;
+		}
+		else if((buffering == 1)||(buffering == 2)||(buffering == 3))
+		{
+			level_state = LIGHT_LEVEL3;
+			buffering = 3;
+		}
+	}
+	
+	else if(adc >= 1800 && adc < 1900)
+	{
+		level_state = LIGHT_LEVEL3;
+	}
+
+	else if(adc >= 1200 && adc < 1800)
+	{
+		if((buffering == 3)||(buffering == 4))
+		{	
+			level_state = LIGHT_LEVEL3;
+			buffering = 3;
+		}
+		else if((buffering == 1)||(buffering == 2))
+		{
+			level_state = LIGHT_LEVEL2;
+			buffering = 2;
+		}
+	}
+
+	else if(adc >= 500 && adc < 1200)
+	{
+		level_state = LIGHT_LEVEL2;
+		buffering = 2;
+	}
+	
+	else if(adc >= 80 && adc < 500)
+	{
+		if((buffering == 2)||(buffering == 3)||(buffering == 4))
+		{	
+			level_state = LIGHT_LEVEL2;
+			buffering = 2;
+		}
+		else if(buffering == 1)
+		{
+			level_state = LIGHT_LEVEL1;
+			buffering = 1;
+		}
+	}
+
+	else if(adc < 80)
+	{
+		level_state = LIGHT_LEVEL1;
+		buffering = 1;
+	}
+#endif
+	if((backlight_level > 5)&&(!lightsensor_test))
+	{
+		gprintk("backlight_level = %d\n", backlight_level); //Temp
+		cur_state = level_state;	
+	}
+#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
+	if(autobrightness_mode)
+	{
+		if((pre_val!=1)&&(current_gamma_value == 24)&&(level_state == LIGHT_LEVEL4)&&(current_mDNIe_UI == mDNIe_UI_MODE))
+		{	
+			mDNIe_Mode_set_for_backlight(pmDNIe_Gamma_set[1]);
+			pre_val = 1;
+			gprintk("mDNIe_Mode_set_for_backlight - pmDNIe_Gamma_set[1]\n" );
+		}
+	}
+#endif
+		
+	
+	gprintk("cur_state = %d\n",cur_state); //Temp
+}
+#endif
 
 int lightsensor_get_adcvalue(void)
 {
@@ -515,7 +607,6 @@ static void gp2a_work_func_prox(struct work_struct *work)
 
 irqreturn_t gp2a_irq_handler(int irq, void *dev_id)
 {
-	struct gp2a_data *gp2a = dev_id;
 	char value;
 	value = gpio_get_value(GPIO_PS_VOUT);
 
@@ -523,57 +614,6 @@ irqreturn_t gp2a_irq_handler(int irq, void *dev_id)
 	printk("[PROXIMITY] IRQ_HANDLED %d \n", value);
 	return IRQ_HANDLED;
 }
-
-static int opt_attach(struct i2c_adapter *adap, int addr, int kind)
-{
-	struct i2c_client *c;
-	int ret,err=0;
-
-	
-	gprintk("\n");
-	if ( !i2c_check_functionality(adap,I2C_FUNC_SMBUS_BYTE_DATA) ) {
-		printk(KERN_INFO "byte op is not permited.\n");
-		return err;
-	}
-	c = kzalloc(sizeof(struct i2c_client),GFP_KERNEL);
-	if (!c)
-	{
-		printk("kzalloc error \n");
-		return -ENOMEM;
-
-	}
-
-	memset(c, 0, sizeof(struct i2c_client));	
-	strncpy(c->name,"gp2a",I2C_NAME_SIZE);
-	c->addr = addr;
-	c->adapter = adap;
-	c->driver = &opt_i2c_driver;
-	c->flags = I2C_DF_NOTIFY | I2C_M_IGNORE_NAK;
-
-	if ((ret = i2c_attach_client(c)) < 0)
-	{
-		printk("i2c_attach_client error\n");
-		goto error;
-	}
-	opt_i2c_client = c;
-
-	gprintk("\n");
-	return ret;
-
-error:
-	printk("in %s , ret = %d \n",__func__,ret);
-	kfree(c);
-	return err;
-}
-
-static int opt_attach_adapter(struct i2c_adapter *adap)
-{
-	int ret;
-	gprintk("\n");
-	ret =  i2c_probe(adap, &opt_addr_data, opt_attach);
-	return ret;
-}
-
 
 static int opt_i2c_init(void) 
 {
@@ -617,7 +657,7 @@ int opt_i2c_read(u8 reg, u8 *val, unsigned int len )
 
 int opt_i2c_write( u8 reg, u8 *val )
 {
-    int err;
+    int err = 0;
     struct i2c_msg msg[1];
     unsigned char data[2];
     int retry = 10;
@@ -638,7 +678,7 @@ int opt_i2c_write( u8 reg, u8 *val )
 
         err = i2c_transfer(opt_i2c_client->adapter, msg, 1);
 
-    if (err >= 0) return 0;
+        if (err >= 0) return 0;
     }
     printk("%s %d i2c transfer error\n", __func__, __LINE__);
     return err;
@@ -648,12 +688,11 @@ int opt_i2c_write( u8 reg, u8 *val )
 
 void gp2a_chip_init(void)
 {
-	gprintk("\n");
-	
 	/* Power On */
-#if (defined CONFIG_ARIES_VER_B0) || (defined CONFIG_ARIES_VER_B1) || (defined CONFIG_ARIES_VER_B2) || (defined CONFIG_ARIES_VER_B3)
 	//LDO PS_ON high : LEDA_3.0V
 	int err = 1;
+
+	gprintk("\n");
 
 	err = gpio_request(GPIO_PS_ON, "PS_ON");
 
@@ -667,22 +706,9 @@ void gp2a_chip_init(void)
 	gpio_free(GPIO_PS_ON);
 
 	s3c_gpio_slp_cfgpin(GPIO_PS_ON, S3C_GPIO_SLP_PREV);
-    	//s3c_gpio_slp_setpull_updown(GPIO_PS_ON, S3C_GPIO_PULL_NONE);
-#else
-	/*Set_MAX8998_PM_OUTPUT_Voltage(LDO7, VCC_3p000);  //opt_3.0V
-	Set_MAX8998_PM_REG(ELDO7, 1);
-	Set_MAX8998_PM_OUTPUT_Voltage(BUCK3, VCC_1p800);  //PDA 1.7V
-	Set_MAX8998_PM_REG(EN3, 1);*/
-#endif
+    //s3c_gpio_slp_setpull_updown(GPIO_PS_ON, S3C_GPIO_PULL_NONE);
 
-	mdelay(1);
-	
-	/* set INT 	*/
-	s3c_gpio_cfgpin(GPIO_PS_VOUT, S3C_GPIO_SFN(GPIO_PS_VOUT_AF));
-	s3c_gpio_setpull(GPIO_PS_VOUT, S3C_GPIO_PULL_NONE);
-	set_irq_type(IRQ_GP2A_INT, IRQ_TYPE_EDGE_BOTH);
-		
-	
+	//mdelay(1);
 }
 
 
@@ -701,7 +727,6 @@ void gp2a_chip_init(void)
 
 void gp2a_on(struct gp2a_data *gp2a, int type)
 {
-	u8 value;
 	ktime_t light_polling_time;
 	gprintk(KERN_INFO "[OPTICAL] gp2a_on(%d)\n",type);
 	if(type == PROXIMITY)
@@ -752,8 +777,6 @@ void gp2a_on(struct gp2a_data *gp2a, int type)
 
 static void gp2a_off(struct gp2a_data *gp2a, int type)
 {
-	u8 value;
-
 	gprintk(KERN_INFO "[OPTICAL] gp2a_off(%d)\n",type);
 	if(type == PROXIMITY || type == ALL)
 	{
@@ -791,8 +814,9 @@ static void gp2a_off(struct gp2a_data *gp2a, int type)
 /*					 */
 static int AdcToLux_Testmode(int adc)
 {
-	gprintk("[%s] adc:%d\n",__func__,adc);
 	unsigned int lux = 0;
+
+	gprintk("[%s] adc:%d\n",__func__,adc);
 	/*temporary code start*/
 	
 	if(adc >= 1800)
@@ -812,11 +836,12 @@ static int AdcToLux_Testmode(int adc)
 
 static ssize_t lightsensor_file_state_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	gprintk("called %s \n",__func__);
-
 	int adc = 0;
 	int sum = 0;
 	int i = 0;
+
+	gprintk("called %s \n",__func__);
+
 	if(!light_enable)
 	{
 		for(i = 0; i < 10; i++)
@@ -843,21 +868,21 @@ static ssize_t lightsensor_file_state_show(struct device *dev, struct device_att
 static ssize_t lightsensor_file_state_store(struct device *dev,
         struct device_attribute *attr, const char *buf, size_t size)
 {
-	gprintk("called %s \n",__func__);
-	
 	int value;
-    sscanf(buf, "%d", &value);
+
+	gprintk("called %s \n",__func__);
+	sscanf(buf, "%d", &value);
 
 	if(value==1)
 	{
 		autobrightness_mode = ON;
-		printk(KERN_DEBUG "[brightness_mode] BRIGHTNESS_MODE_SENSOR\n");
+		printk("[brightness_mode] BRIGHTNESS_MODE_SENSOR\n");
 	}
 	else if(value==0) 
 	{
 		autobrightness_mode = OFF;
-		printk(KERN_DEBUG "[brightness_mode] BRIGHTNESS_MODE_USER\n");
-		#ifdef MDNIE_TUNINGMODE_FOR_BACKLIGHT
+		printk("[brightness_mode] BRIGHTNESS_MODE_USER\n");
+		#ifdef CONFIG_FB_S3C_MDNIE_TUNINGMODE_FOR_BACKLIGHT
 		if(pre_val==1)
 		{
 			mDNIe_Mode_set_for_backlight(pmDNIe_Gamma_set[2]);
@@ -941,7 +966,6 @@ static int gp2a_opt_probe( struct platform_device* pdev )
 	
 	struct gp2a_data *gp2a;
 	int irq;
-	int i;
 	int ret;
        u8 value;
 
@@ -954,9 +978,6 @@ static int gp2a_opt_probe( struct platform_device* pdev )
 
 	}
 
-
-	gprintk("in %s \n",__func__);
-	
 	/* hrtimer Settings */
 
 	hrtimer_init(&gp2a->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -1008,7 +1029,7 @@ static int gp2a_opt_probe( struct platform_device* pdev )
 		return -ENODEV;
 	}
 	else
-		printk("opt_i2c_client : (%x)\n",opt_i2c_client);
+		printk("opt_i2c_client : (0x%p)\n",opt_i2c_client);
 	
 
 	/* Input device Settings */
@@ -1100,12 +1121,12 @@ static int gp2a_opt_suspend( struct platform_device* pdev, pm_message_t state )
 
 	if(!proximity_enable)
 	{
-		gpio_direction_output(GPIO_PS_ON, 0);
-              gpio_direction_output(GPIO_ALS_SDA_28V, 0);
-              gpio_direction_output(GPIO_ALS_SCL_28V, 0);
-		//disable_irq(gp2a->irq);
-		//value = 0x02;
-		//opt_i2c_write((u8)(REGS_CON),&value);
+		s3c_gpio_cfgpin(GPIO_PS_ON, S3C_GPIO_OUTPUT);
+		//s3c_gpio_cfgpin(GPIO_ALS_SDA_28V, S3C_GPIO_OUTPUT);
+		//s3c_gpio_cfgpin(GPIO_ALS_SCL_28V, S3C_GPIO_OUTPUT);
+		gpio_set_value(GPIO_PS_ON, 0);
+		//gpio_set_value(GPIO_ALS_SDA_28V, 0);
+		//gpio_set_value(GPIO_ALS_SCL_28V, 0);
 	}
 
 
@@ -1116,11 +1137,11 @@ static int gp2a_opt_suspend( struct platform_device* pdev, pm_message_t state )
 static int gp2a_opt_resume( struct platform_device* pdev )
 {
 
-	struct gp2a_data *gp2a = platform_get_drvdata(pdev);
+	//struct gp2a_data *gp2a = platform_get_drvdata(pdev);
 	u8 value;
-	ktime_t light_polling_time;
 
-	gpio_direction_output(GPIO_PS_ON, 1);
+	s3c_gpio_cfgpin(GPIO_PS_ON, S3C_GPIO_OUTPUT);
+	gpio_set_value(GPIO_PS_ON, 1);
 	gprintk("[%s] : \n",__func__);
 	/* wake_up source handler */
 	if(proximity_enable)
@@ -1158,7 +1179,7 @@ static int gp2a_opt_resume( struct platform_device* pdev )
 	}
        else
        {
-        value = 0x00;
+            	value = 0x00;
 		opt_i2c_write((u8)(REGS_OPMOD),&value);
        }
 
@@ -1178,10 +1199,13 @@ static int gp2a_opt_resume( struct platform_device* pdev )
 	return 0;
 }
 
+//#if defined(CONFIG_ARIES_EUR)
+#if 1
 static double StateToLux(state_type state)
 {
-	gprintk("[%s] cur_state:%d\n",__func__,state);
 	double lux = 0;
+	
+	gprintk("[%s] cur_state:%d\n",__func__,state);
 
 	if(state== LIGHT_LEVEL5){
 		lux = 15000.0;
@@ -1192,7 +1216,7 @@ static double StateToLux(state_type state)
 	else if(state == LIGHT_LEVEL3){
 		lux = 5000.0;
 	}
-	else if(state== LIGHT_LEVEL2){
+	else if(state == LIGHT_LEVEL2){
 		lux = 1000.0;
 	}
 	else if(state == LIGHT_LEVEL1){
@@ -1205,6 +1229,33 @@ static double StateToLux(state_type state)
 	}
 	return lux;
 }
+#else // Modify NTTS1
+static double StateToLux(state_type state)
+{
+	double lux = 0;
+	
+	gprintk("[%s] cur_state:%d\n",__func__,state);
+
+	if(state== LIGHT_LEVEL4){
+		lux = 15000.0;
+	}
+	else if(state == LIGHT_LEVEL3){
+		lux = 9000.0;
+	}
+	else if(state== LIGHT_LEVEL2){
+		lux = 5000.0;
+	}
+	else if(state == LIGHT_LEVEL1){
+		lux = 6.0;
+	}
+
+	else {
+		lux = 5000.0;
+		gprintk("[%s] cur_state fail\n",__func__);
+	}
+	return lux;
+}
+#endif
 
 static int light_open(struct inode *ip, struct file *fp)
 {
@@ -1218,11 +1269,10 @@ static int light_open(struct inode *ip, struct file *fp)
 
 static ssize_t light_read(struct file *filp, double *lux, size_t count, loff_t *f_pos)
 {
-	int adc;
 	double lux_val;
 
 	lux_val = StateToLux(cur_state);
-	gprintk("GP2A: light_read(): cur_state = %d\n",cur_state);
+	//printk("GP2A: light_read(): cur_state = %d\n",cur_state);
 	put_user(lux_val, lux);
 	
 	return 1;
@@ -1240,24 +1290,36 @@ static int light_release(struct inode *ip, struct file *fp)
 static int proximity_onoff(u8 onoff)
 {
 	u8 value;
-       int i;
+    int i;
        
 	if(onoff)
 	{
-        	for(i=1;i<5;i++)
-        	{
-        		opt_i2c_write((u8)(i),&gp2a_original_image[i]);
-        	}
+       	for(i=1;i<5;i++)
+       	{
+       		opt_i2c_write((u8)(i),&gp2a_original_image[i]);
+    	}
 		proximity_enable = 1;
-              enable_irq(IRQ_GP2A_INT);
+
+		/* set INT  */
+		s3c_gpio_cfgpin(GPIO_PS_VOUT, S3C_GPIO_SFN(GPIO_PS_VOUT_AF));
+		s3c_gpio_setpull(GPIO_PS_VOUT, S3C_GPIO_PULL_NONE);
+		set_irq_type(IRQ_GP2A_INT, IRQ_TYPE_EDGE_BOTH);
+
+        enable_irq(IRQ_GP2A_INT);
 	}
 	else
 	{
-              disable_irq(IRQ_GP2A_INT);
+		/* set input/pull-down  */
+ 		s3c_gpio_cfgpin(GPIO_PS_VOUT, S3C_GPIO_INPUT);
+  		s3c_gpio_setpull(GPIO_PS_VOUT, S3C_GPIO_PULL_DOWN);
+
+        disable_irq(IRQ_GP2A_INT);
 		value = 0x00;
 		opt_i2c_write((u8)(REGS_OPMOD),&value);
 		proximity_enable = 0;
 	}
+	
+	return 0;
 }
 
 static int proximity_open(struct inode *ip, struct file *fp)
@@ -1286,48 +1348,52 @@ static int proximity_release(struct inode *ip, struct file *fp)
 	return 0;
 }
 
-#if 0
-static long proximity_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static int opt_i2c_remove(struct i2c_client *client)
 {
-
-	struct gp2a_data *gp2a = dev_get_drvdata(switch_cmd_dev);
-	int ret=0;
-	switch(cmd) {
-
-		case SHARP_GP2AP_OPEN:
-			{
-				if(!proximity_enable)
-				{
-					printk(KERN_INFO "[PROXIMITY] %s : case OPEN\n", __FUNCTION__);
-					gp2a_on(gp2a,PROXIMITY);
-				}
-				else
-					printk(KERN_INFO "[PROXIMITY] Warning!! Proximity is already power on\n");
-				
-			}
-			break;
-
-		case SHARP_GP2AP_CLOSE:
-			{
-				if(proximity_enable)
-				{
-					printk(KERN_INFO "[PROXIMITY] %s : case CLOSE\n", __FUNCTION__);
-					gp2a_off(gp2a,PROXIMITY);
-		   			wake_lock_timeout(&prx_wake_lock,3 * HZ);
-				}
-				else
-					printk(KERN_INFO "[PROXIMITY] Warning!! Proximity is already power off\n");
-			}
-			break;
-
-		default:
-			printk(KERN_INFO "[PROXIMITY] unknown ioctl %d\n", cmd);
-			ret = -1;
-			break;
-	}
-	return ret;
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+		return -ENODEV;
+	opt_i2c_client = client;
+	return 0;
 }
-#endif
+
+static int opt_i2c_probe(struct i2c_client *client,  const struct i2c_device_id *id)
+{
+	struct opt_state *opt;
+
+	opt = kzalloc(sizeof(struct opt_state), GFP_KERNEL);
+	if (opt == NULL) {		
+		printk("failed to allocate memory \n");
+		return -ENOMEM;
+	}
+	
+	opt->client = client;
+	i2c_set_clientdata(client, opt);
+	
+	/* rest of the initialisation goes here. */
+	
+	printk("GP2A opt i2c attach success!!!\n");
+
+	opt_i2c_client = client;
+
+	return 0;
+}
+
+
+static const struct i2c_device_id opt_device_id[] = {
+	{"gp2a", 0},
+	{}
+};
+MODULE_DEVICE_TABLE(i2c, opt_device_id);
+
+static struct i2c_driver opt_i2c_driver = {
+	.driver = {
+		.name = "gp2a",
+		.owner= THIS_MODULE,
+	},
+	.probe		= opt_i2c_probe,
+	.remove		= opt_i2c_remove,
+	.id_table	= opt_device_id,
+};
 
 
 

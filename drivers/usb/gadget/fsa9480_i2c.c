@@ -5,20 +5,18 @@
 #include <plat/pm.h>
 #include <asm/irq.h>
 #include <linux/delay.h>
-#include <plat/s5pc110.h>
 #include <plat/gpio-cfg.h>
-#include <plat/regs-gpio.h>
-#include <plat/regs-clock.h>
+#include <mach/regs-gpio.h>
+#include <mach/regs-clock.h>
 #include <mach/param.h>
 #include "fsa9480_i2c.h"
-#include <linux/syscalls.h> //denis
-#include <linux/fcntl.h> //denis
-#include <asm/uaccess.h> //denis
+#include <linux/syscalls.h>
+#include <linux/fcntl.h>
+#include <asm/uaccess.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/gadget.h>
 #include <mach/max8998_function.h>
 #include <linux/switch.h>
-#include "f_tool_launcher.h"
 
 extern void otg_phy_init(void);
 extern void otg_phy_off(void);
@@ -28,9 +26,16 @@ extern int askonstatus;
 extern int inaskonstatus;
 extern int BOOTUP;
 
+static int g_tethering;
+static int g_dock;
+
+#define DOCK_REMOVED 0
+#define HOME_DOCK_INSERTED 1
+#define CAR_DOCK_INSERTED 2
+
+int oldusbstatus=0;
+
 int mtp_mode_on = 0;
-
-
 
 #define FSA9480_UART 	1
 #define FSA9480_USB 	2
@@ -45,68 +50,44 @@ static u8 MicroJigUSBOffStatus=0;
 static u8 MicroJigUARTOffStatus=0;
 u8 MicroTAstatus=0;
 
-
-#define FSA9480UCX		0x4A
-
 /* switch selection */
 #define USB_SEL_MASK  				(1 << 0)
 #define UART_SEL_MASK				(1 << 1)
 #define USB_SAMSUNG_KIES_MASK		(1 << 2)
 #define USB_UMS_MASK				(1 << 3)
 #define USB_MTP_MASK				(1 << 4)
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 #define USB_VTP_MASK				(1 << 5)
-#define USB_ASKON_MASK				(1 << 6)
+#endif
+#define USB_ASKON_MASK			(1 << 6)
 
 #define DRIVER_NAME  "usb_mass_storage"
 
-static unsigned short fsa9480_normal_i2c[] = {I2C_CLIENT_END };
-static unsigned short fsa9480_ignore[] = { I2C_CLIENT_END };
-#ifdef CONFIG_JUPITER_VER_B4
-static unsigned short fsa9480_i2c_probe[] = { 6, FSA9480UCX >> 1, I2C_CLIENT_END };
-#else
-static unsigned short fsa9480_i2c_probe[] = { 7, FSA9480UCX >> 1, I2C_CLIENT_END };
-#endif
+struct i2c_driver fsa9480_i2c_driver;
+static struct i2c_client *fsa9480_i2c_client = NULL;
+
+struct fsa9480_state {
+	struct i2c_client *client;
+};
+
+static struct i2c_device_id fsa9480_id[] = {
+	{"fsa9480", 0},
+	{}
+};
 
 static u8 fsa9480_device1 = 0, fsa9480_device2 = 0, fsa9480_adc = 0;
-
-static struct i2c_client fsa9480_i2c_client;
-struct i2c_driver fsa9480_i2c_driver;
-
 int usb_path = 0;
-static int usb_power = 2;
 static int usb_state = 0;
-int log_via_usb = log_usb_disable; //denis
+int log_via_usb = log_usb_disable;
+static int switch_sel = 0;
 
-#if 1 //20100421_inchul
-static int dpram_dump_on = 0;
-#endif
+int mtp_power_off = 0;
 
-#if 1 //20100601_inchul
-extern unsigned int HWREV;
-#endif
-
-static u8 testvalue=0;
-static u8 testvalue1=0;
-
-static struct timer_list fsa9480_init_timer;
 static wait_queue_head_t usb_detect_waitq;
 static struct workqueue_struct *fsa9480_workqueue;
 static struct work_struct fsa9480_work;
-unsigned short fsa9480_probe=1;
-
 struct switch_dev indicator_dev;
-
-#if 1 //20100630_inchul
-struct switch_dev switch_dock_detection = {
-		.name = "dock",
-};
-#endif
-
-static struct i2c_client_address_data fsa9480_addr_data = {
-	.normal_i2c = fsa9480_normal_i2c,
-	.ignore     = fsa9480_ignore,
-	.probe      = fsa9480_i2c_probe,
-};
+struct delayed_work micorusb_init_work;
 
 extern int currentusbstatus;
 byte switchinginitvalue[12];
@@ -117,19 +98,10 @@ extern int usb_mtp_select(int disable);
 extern int usb_switch_select(int enable);
 extern int askon_switch_select(int enable);
 extern unsigned int charging_mode_get(void);
+extern void set_dock_state(int value);
 
+int samsung_kies_mtp_mode_flag;
 void FSA9480_Enable_CP_USB(u8 enable);
-
-#ifdef FEATURE_TOOL_LAUNCHER
-int is_tool_launcher_enabled(void);
-int get_tool_launcher_setting(void);
-void set_tool_launcher_setting(int setting_value);
-extern int usb_switch_usb_mode_tool_launcher(int mode);
-static int tool_launcher_setting_state = -1;
-#endif
-
-//struct timer_list microusb_timer;
-struct delayed_work micorusb_init_work;
 
 FSA9480_DEV_TY1_TYPE FSA9480_Get_DEV_TYP1(void)
 {
@@ -147,6 +119,7 @@ u8 FSA9480_Get_JIG_Status(void)
 }
 EXPORT_SYMBOL(FSA9480_Get_JIG_Status);
 
+
 u8 FSA9480_Get_FPM_Status(void)
 {
 	if(fsa9480_adc == RID_FM_BOOT_ON_UART)
@@ -155,6 +128,7 @@ u8 FSA9480_Get_FPM_Status(void)
 		return 0;
 }
 EXPORT_SYMBOL(FSA9480_Get_FPM_Status);
+
 
 u8 FSA9480_Get_USB_Status(void)
 {
@@ -187,64 +161,27 @@ EXPORT_SYMBOL(FSA9480_Get_JIG_UART_Status);
 
 int get_usb_cable_state(void)
 {
-    //DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
 	return usb_state;
 }
 
+
 static int fsa9480_read(struct i2c_client *client, u8 reg, u8 *data)
 {
-
 	int ret;
-	u8 buf[1];
-	struct i2c_msg msg[2];
 
-	buf[0] = reg; 
-
-	msg[0].addr = client->addr;
-	msg[0].flags = 0;
-	msg[0].len = 1;
-	msg[0].buf = buf;
-
-	msg[1].addr = client->addr;
-	msg[1].flags = I2C_M_RD;
-	msg[1].len = 1;
-	msg[1].buf = buf;
-
-	ret = i2c_transfer(client->adapter, msg, 2);
-	if (ret != 2) 
+	ret = i2c_smbus_read_byte_data(client, reg);
+	if (ret < 0)
 		return -EIO;
 
-	*data = buf[0];
-	
+	*data = ret & 0xff;
 	return 0;
 }
-
-EXPORT_SYMBOL(fsa9480_read);
 
 
 static int fsa9480_write(struct i2c_client *client, u8 reg, u8 data)
 {
-
-	int ret;
-	u8 buf[2];
-	struct i2c_msg msg[1];
-
-	buf[0] = reg;
-	buf[1] = data;
-
-	msg[0].addr = client->addr;
-	msg[0].flags = 0;
-	msg[0].len = 2;
-	msg[0].buf = buf;
-
-	ret = i2c_transfer(client->adapter, msg, 1);
-	if (ret != 1) 
-		return -EIO;
-
-	return 0;
+	return i2c_smbus_write_byte_data(client, reg, data);
 }
-
-EXPORT_SYMBOL(fsa9480_write);
 
 
 void ap_usb_power_on(int set_vaue)
@@ -257,6 +194,14 @@ void ap_usb_power_on(int set_vaue)
 		reg_value = reg_value | (0x1 << 7);
 		Set_MAX8998_PM_ADDR(reg_address,&reg_value,1);
 		printk("[ap_usb_power_on]AP USB Power ON, askon: %d, mtp : %d\n",askonstatus,mtp_mode_on);
+			if(mtp_mode_on == 1) {
+				samsung_kies_mtp_mode_flag = 1;
+				printk("************ [ap_usb_power_on] samsung_kies_mtp_mode_flag:%d, mtp:%d\n", samsung_kies_mtp_mode_flag, mtp_mode_on);
+			}
+			else {
+				samsung_kies_mtp_mode_flag = 0;
+				printk("!!!!!!!!!!! [ap_usb_power_on]AP samsung_kies_mtp_mode_flag%d, mtp:%d\n",samsung_kies_mtp_mode_flag, mtp_mode_on);
+			}
 		}
 	else{
 		Get_MAX8998_PM_ADDR(reg_address, &reg_value, 1); // read 0x0D register
@@ -264,31 +209,21 @@ void ap_usb_power_on(int set_vaue)
 		Set_MAX8998_PM_ADDR(reg_address,&reg_value,1);
 		printk("[ap_usb_power_on]AP USB Power OFF, askon: %d, mtp : %d\n",askonstatus,mtp_mode_on);
 		}
-		
 }
+
+		
 void usb_api_set_usb_switch(USB_SWITCH_MODE usb_switch)
 {
-
 	if(usb_switch == USB_SW_CP)
 	{
 		//USB_SEL GPIO Set High => CP USB enable
-		#ifdef CONFIG_JUPITER_VER_B4
-		gpio_set_value(GPIO_USB_SEL, 1);
-		#endif
 		FSA9480_Enable_CP_USB(1);
 	}
 	else
 	{
 		//USB_SEL GPIO Set Low => AP USB enable
-		#ifdef CONFIG_JUPITER_VER_B4
-		gpio_set_value(GPIO_USB_SEL, 0);
-		#endif
 		FSA9480_Enable_CP_USB(0);
-
-		//reconnect AP USB
-		//usb_api_reconnect();
 	}
-
 }
 
 
@@ -307,7 +242,7 @@ void Ap_Cp_Switch_Config(u16 ap_cp_mode)
 			usb_api_set_usb_switch(USB_SW_CP);
 			break;
 		case CP_UART_MODE:
-			gpio_set_value(GPIO_UART_SEL, 0);		
+			gpio_set_value(GPIO_UART_SEL, 0);			
 			break;
 		default:
 			printk("Ap_Cp_Switch_Config error");
@@ -318,7 +253,7 @@ void Ap_Cp_Switch_Config(u16 ap_cp_mode)
 
 /* MODEM USB_SEL Pin control */
 /* 1 : PDA, 2 : MODEM */
-#define SWITCH_PDA			1
+#define SWITCH_PDA		1
 #define SWITCH_MODEM		2
 
 void usb_switching_value_update(int value)
@@ -350,6 +285,7 @@ void uart_switching_value_update(int value)
 
 }
 
+
 void switching_value_update(void)
 {
 	int index;
@@ -367,7 +303,6 @@ void switching_value_update(void)
 
 static ssize_t factoryreset_value_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
 {
-
 	if(strncmp(buf, "FACTORYRESET", 12) == 0 || strncmp(buf, "factoryreset", 12) == 0)
 		factoryresetstatus = 0xAE;
 
@@ -380,40 +315,40 @@ static DEVICE_ATTR(FactoryResetValue, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, NULL
 /* for sysfs control (/sys/class/sec/switch/usb_sel) */
 static ssize_t usb_sel_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	u8 i, pData;
+//	struct i2c_client *client = fsa9480_i2c_client;
+//	u8 i, pData;
 
 	sprintf(buf, "USB Switch : %s\n", usb_path==SWITCH_PDA?"PDA":"MODEM");
 
-    	for(i = 0; i <= 0x14; i++) 
-		fsa9480_read(&fsa9480_i2c_client, i, &pData);
+//    	for(i = 0; i <= 0x14; i++)
+//		fsa9480_read(client, i, &pData);
 
 	return sprintf(buf, "%s\n", buf);
 }
 
+
 void usb_switch_mode(int sel)
 {
-    DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
-	  
 	if (sel == SWITCH_PDA)
 	{
-		DEBUG_FSA9480("[FSA9480] Path : PDA\n");
+		DEBUG_FSA9480("[FSA9480] %s: Path = PDA\n", __func__);
 		Ap_Cp_Switch_Config(AP_USB_MODE);
-	} else if (sel == SWITCH_MODEM) 
+	}
+	else if (sel == SWITCH_MODEM) 
 	{
-		DEBUG_FSA9480("[FSA9480] Path : MODEM\n");
+		DEBUG_FSA9480("[FSA9480] %s: Path = MODEM\n", __func__);
 		Ap_Cp_Switch_Config(CP_USB_MODE);
-	} else
+	}
+	else
 		DEBUG_FSA9480("[FSA9480] Invalid mode...\n");
 }
 EXPORT_SYMBOL(usb_switch_mode);
 
-/*
+
 void microusb_uart_status(int status)
 {
-	int switch_sel;
 	int uart_sel;
 	int usb_sel;
-
 
 	if(!FSA9480_Get_JIG_UART_Status())	
 		return;
@@ -423,7 +358,6 @@ void microusb_uart_status(int status)
 
 	uart_sel = (switch_sel & (int)(UART_SEL_MASK)) >> 1;
 	usb_sel = switch_sel & (int)(USB_SEL_MASK);
-
 
 	if(status){
 		if(uart_sel)
@@ -435,27 +369,27 @@ void microusb_uart_status(int status)
 		if(!usb_sel)
 			Ap_Cp_Switch_Config(AP_USB_MODE);
 		}
-
 }
-*/
+
 
 static ssize_t usb_sel_store(
 		struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t size)
 {
-    DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
-	int switch_sel;
+	DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
 
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
 
-	if(strncmp(buf, "PDA", 3) == 0 || strncmp(buf, "pda", 3) == 0) {
+	if(strncmp(buf, "PDA", 3) == 0 || strncmp(buf, "pda", 3) == 0)
+	{
 		usb_switch_mode(SWITCH_PDA);
 		usb_switching_value_update(SWITCH_PDA);
 		switch_sel |= USB_SEL_MASK;
 	}
 
-	if(strncmp(buf, "MODEM", 5) == 0 || strncmp(buf, "modem", 5) == 0) {
+	if(strncmp(buf, "MODEM", 5) == 0 || strncmp(buf, "modem", 5) == 0)
+	{
 		usb_switch_mode(SWITCH_MODEM);
 		usb_switching_value_update(SWITCH_MODEM);		
 		switch_sel &= ~USB_SEL_MASK;
@@ -466,7 +400,7 @@ static ssize_t usb_sel_store(
 	if (sec_set_param_value)
 		sec_set_param_value(__SWITCH_SEL, &switch_sel);
 
-	//microusb_uart_status(0);
+	microusb_uart_status(0);
 
 	return size;
 }
@@ -475,53 +409,18 @@ static DEVICE_ATTR(usb_sel, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, usb_sel_show, 
 
 
 int connectivity_switching_init_state=0;
-
-//#define FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER
-#if 1 //20100421_inchul
-u32 set_phone_dump_stat(int state)
-{
-    dpram_dump_on = state;
-}
-
-EXPORT_SYMBOL(set_phone_dump_stat);
-#endif
-
 void usb_switch_state(void)
 {
-	int switch_sel;
-	int usb_sel;
+	int usb_sel = 0;
 
 	if(!connectivity_switching_init_state)
 		return;
-
-#if 1 //20100421_inchul
- if(dpram_dump_on)
- {
-     usb_switch_mode(SWITCH_MODEM);
-     return;
- }
-#endif  
 
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
 
 	usb_sel = switch_sel & (int)(USB_SEL_MASK);
 	
-#if 0 //def FEATURE_DEVICE_AS_CDROM_DEVICE_FOR_DRIVER     
-//  
-    /* If usb is connected, we have to launch RC client 
-          So, usb switch -> PDA
-               adb_enable -> UMS mode
-        */
-    extern int UmsCDEnable;
-
-    UmsCDEnable = 1;
-
-    usb_switch_mode(SWITCH_PDA);
-    usb_switching_value_update(SWITCH_PDA);
-    
-    usb_switch_select(USBSTATUS_UMS);
-#else
 	if(usb_sel)
 	{
 		usb_switch_mode(SWITCH_PDA);
@@ -532,18 +431,15 @@ void usb_switch_state(void)
 		usb_switch_mode(SWITCH_MODEM);
 		usb_switching_value_update(SWITCH_MODEM);
 	}
-#endif    
 }
 
-/*
+
 void uart_insert_switch_state(void)
 {
+	int usb_sel = 0;
 
 	if(!connectivity_switching_init_state)
 		return;
-	
-	int switch_sel;
-	int usb_sel;
 	
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
@@ -552,17 +448,16 @@ void uart_insert_switch_state(void)
 
 	if(!usb_sel)
 		Ap_Cp_Switch_Config(AP_USB_MODE);
-
 }
+
 
 void uart_remove_switch_state(void)
 {
-	int switch_sel;
-	int usb_sel;
+	int usb_sel = 0;
 
 	if(!connectivity_switching_init_state)
 		return;
-	
+
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
 
@@ -574,8 +469,6 @@ void uart_remove_switch_state(void)
 		Ap_Cp_Switch_Config(CP_USB_MODE);
 
 }
-*/
-
 
 
 /**********************************************************************
@@ -591,9 +484,7 @@ void uart_remove_switch_state(void)
 ***********************************************************************/
 static ssize_t usb_state_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-    int cable_state;
-
-	cable_state = get_usb_cable_state();
+	int cable_state = get_usb_cable_state();
 
 	sprintf(buf, "%s\n", (cable_state & (CRB_JIG_USB<<8 | CRA_USB<<0 ))?"USB_STATE_CONFIGURED":"USB_STATE_NOTCONFIGURED");
 
@@ -615,9 +506,7 @@ static ssize_t usb_state_store(
 		struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t size)
 {
-    DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
-
-
+	DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
 	return 0;
 }
 
@@ -625,10 +514,10 @@ static ssize_t usb_state_store(
 static DEVICE_ATTR(usb_state, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, usb_state_show, usb_state_store);
 
 
-static int uart_current_owner = 0; //20100531_inchul
+static int uart_current_owner = 1;
 static ssize_t uart_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
 {	
-	if ( uart_current_owner )		
+	if (uart_current_owner)
 		return sprintf(buf, "%s[UART Switch] Current UART owner = PDA \n", buf);	
 	else			
 		return sprintf(buf, "%s[UART Switch] Current UART owner = MODEM \n", buf);
@@ -636,8 +525,6 @@ static ssize_t uart_switch_show(struct device *dev, struct device_attribute *att
 
 static ssize_t uart_switch_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
 {	
-	int switch_sel;
-
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
 
@@ -668,7 +555,33 @@ static ssize_t uart_switch_store(struct device *dev, struct device_attribute *at
 static DEVICE_ATTR(uart_sel, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, uart_switch_show, uart_switch_store);
 
 
-//denis
+void FSA9480_ChangePathToAudio(u8 enable)
+{
+	struct i2c_client *client = fsa9480_i2c_client;
+	u8 manualsw1;
+
+	if(enable)
+	{
+		mdelay(10);
+		fsa9480_write(client, REGISTER_MANUALSW1, 0x48);			
+
+		mdelay(10);
+		fsa9480_write(client, REGISTER_CONTROL, 0x1A);
+
+		fsa9480_read(client, REGISTER_MANUALSW1, &manualsw1);
+		printk("Fsa9480 ManualSW1 = 0x%x\n",manualsw1);
+	}
+	else
+	{
+		mdelay(10);
+		fsa9480_write(client, REGISTER_CONTROL, 0x1E);	
+	}
+}
+EXPORT_SYMBOL(FSA9480_ChangePathToAudio);
+
+
+// TODO : need these?
+#if 1
 static ssize_t DMport_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
 {	
 		
@@ -756,33 +669,38 @@ static ssize_t DMlog_switch_store(struct device *dev, struct device_attribute *a
 
 
 static DEVICE_ATTR(DMlog, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, DMlog_switch_show, DMlog_switch_store);
+#endif
 
 
 void UsbMenuSelStore(int sel)
 {	
-	int switch_sel;
-
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);	
 
 	if(sel == 0){
 		switch_sel &= ~(int)USB_UMS_MASK;
 		switch_sel &= ~(int)USB_MTP_MASK;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		switch_sel &= ~(int)USB_VTP_MASK;
+#endif
 		switch_sel &= ~(int)USB_ASKON_MASK;		
 		switch_sel |= (int)USB_SAMSUNG_KIES_MASK;	
 		}
 	else if(sel == 1){
 		switch_sel &= ~(int)USB_UMS_MASK;
 		switch_sel &= ~(int)USB_SAMSUNG_KIES_MASK;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		switch_sel &= ~(int)USB_VTP_MASK;
+#endif
 		switch_sel &= ~(int)USB_ASKON_MASK;				
 		switch_sel |= (int)USB_MTP_MASK;		
 		}
 	else if(sel == 2){
 		switch_sel &= ~(int)USB_SAMSUNG_KIES_MASK;
 		switch_sel &= ~(int)USB_MTP_MASK;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		switch_sel &= ~(int)USB_VTP_MASK;
+#endif
 		switch_sel &= ~(int)USB_ASKON_MASK;				
 		switch_sel |= (int)USB_UMS_MASK;
 		}
@@ -791,12 +709,16 @@ void UsbMenuSelStore(int sel)
 		switch_sel &= ~(int)USB_MTP_MASK;
 		switch_sel &= ~(int)USB_SAMSUNG_KIES_MASK;
 		switch_sel &= ~(int)USB_ASKON_MASK;				
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		switch_sel |= (int)USB_VTP_MASK;	
+#endif
 		}
 	else if(sel == 4){
 		switch_sel &= ~(int)USB_UMS_MASK;
 		switch_sel &= ~(int)USB_MTP_MASK;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		switch_sel &= ~(int)USB_VTP_MASK;
+#endif
 		switch_sel &= ~(int)USB_SAMSUNG_KIES_MASK;				
 		switch_sel |= (int)USB_ASKON_MASK;	
 		}
@@ -807,8 +729,6 @@ void UsbMenuSelStore(int sel)
 
 void PathSelStore(int sel)
 {	
-	int switch_sel;
-
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);	
 
@@ -830,10 +750,8 @@ void PathSelStore(int sel)
 }
 
 
-
 static ssize_t UsbMenuSel_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
 {	
-
 		if (currentusbstatus == USBSTATUS_UMS) 
 			return sprintf(buf, "%s[UsbMenuSel] UMS\n", buf);	
 		
@@ -845,10 +763,10 @@ static ssize_t UsbMenuSel_switch_show(struct device *dev, struct device_attribut
 		
 		else if (currentusbstatus == USBSTATUS_ASKON) 
 			return sprintf(buf, "%s[UsbMenuSel] ASK\n", buf);	
-		
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		else if (currentusbstatus == USBSTATUS_VTP) 
 			return sprintf(buf, "%s[UsbMenuSel] VTP\n", buf);	
-		
+#endif		
 		else if (currentusbstatus == USBSTATUS_ADB) 
 			return sprintf(buf, "%s[UsbMenuSel] ACM_ADB_UMS\n", buf);	
 }
@@ -856,7 +774,6 @@ static ssize_t UsbMenuSel_switch_show(struct device *dev, struct device_attribut
 
 static ssize_t UsbMenuSel_switch_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
 {		
-	
 		if (strncmp(buf, "KIES", 4) == 0)
 		{
 			UsbMenuSelStore(0);		
@@ -874,25 +791,24 @@ static ssize_t UsbMenuSel_switch_store(struct device *dev, struct device_attribu
 			UsbMenuSelStore(2);							
 			usb_switch_select(USBSTATUS_UMS);
 		}
-
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		if (strncmp(buf, "VTP", 3) == 0)
 		{
 			UsbMenuSelStore(3);							
 			usb_switch_select(USBSTATUS_VTP);
 		}
-
+#endif
 		if (strncmp(buf, "ASKON", 5) == 0)
 		{		
 			UsbMenuSelStore(4);									
 			usb_switch_select(USBSTATUS_ASKON);			
 		}
 
-
 	return size;
 }
 
-
 static DEVICE_ATTR(UsbMenuSel, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, UsbMenuSel_switch_show, UsbMenuSel_switch_store);
+
 
 extern int inaskonstatus;
 static ssize_t AskOnStatus_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -901,29 +817,24 @@ static ssize_t AskOnStatus_switch_show(struct device *dev, struct device_attribu
 		return sprintf(buf, "%s\n", "Blocking");
 	else
 		return sprintf(buf, "%s\n", "NonBlocking");
-	
 }
 
 
 static ssize_t AskOnStatus_switch_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
 {		
-	
 	return size;
 }
 
-
 static DEVICE_ATTR(AskOnStatus, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, AskOnStatus_switch_show, AskOnStatus_switch_store);
 
-//denis
+
 static ssize_t AskOnMenuSel_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
 {	
-		
 		return sprintf(buf, "%s[AskOnMenuSel] Port test ready!! \n", buf);	
 }
 
 static ssize_t AskOnMenuSel_switch_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
 {		
-	
 		if (strncmp(buf, "KIES", 4) == 0)
 		{
 			askon_switch_select(USBSTATUS_SAMSUNG_KIES);
@@ -938,28 +849,25 @@ static ssize_t AskOnMenuSel_switch_store(struct device *dev, struct device_attri
 		{
 			askon_switch_select(USBSTATUS_UMS);
 		}
-
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 		if (strncmp(buf, "VTP", 3) == 0)
 		{
 			askon_switch_select(USBSTATUS_VTP);
 		}
-
+#endif
 	return size;
 }
-
 
 static DEVICE_ATTR(AskOnMenuSel, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, AskOnMenuSel_switch_show, AskOnMenuSel_switch_store);
 
 
 static ssize_t Mtp_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
 {	
-		
 		return sprintf(buf, "%s[Mtp] MtpDeviceOn \n", buf);	
 }
 
 static ssize_t Mtp_switch_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
 {		
-	
 	if (strncmp(buf, "Mtp", 3) == 0)
 		{
 			if(mtp_mode_on)
@@ -974,64 +882,150 @@ static ssize_t Mtp_switch_store(struct device *dev, struct device_attribute *att
 	else if (strncmp(buf, "OFF", 3) == 0)
 		{
 				printk("[Mtp_switch_store]AP USB power off. \n");
+				usb_state = 0;
 				usb_mtp_select(1);
 		}
 	return size;
 }
 
-
 static DEVICE_ATTR(Mtp, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, Mtp_switch_show, Mtp_switch_store);
 
 
+static int mtpinitstatus=0;
+static ssize_t MtpInitStatusSel_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
+{	
+	if(mtpinitstatus == 2)
+		return sprintf(buf, "%s\n", "START");
+	else
+		return sprintf(buf, "%s\n", "STOP");
+}
+
+static ssize_t MtpInitStatusSel_switch_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
+{
+	mtpinitstatus = mtpinitstatus + 1;
+
+	return size;
+}
+
+static DEVICE_ATTR(MtpInitStatusSel, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, MtpInitStatusSel_switch_show, MtpInitStatusSel_switch_store);
+
+void UsbIndicator(u8 state)
+{
+	switch_set_state(&indicator_dev, state);
+}
+
+static ssize_t tethering_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	if (g_tethering)
+		return sprintf(buf, "1\n");
+	else			
+		return sprintf(buf, "0\n");
+}
+
+static ssize_t tethering_switch_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
+{
+	int usbstatus;
+	usbstatus = FSA9480_Get_USB_Status();
+	printk("usbstatus = 0x%x, currentusbstatus = 0x%x\n", usbstatus, currentusbstatus);
+
+	if (strncmp(buf, "1", 1) == 0)
+	{
+		printk("tethering On\n");
+
+		g_tethering = 1;
+		usb_switch_select(USBSTATUS_VTP);
+		UsbIndicator(0);
+	}
+	else if (strncmp(buf, "0", 1) == 0)
+	{
+		printk("tethering Off\n");
+
+		g_tethering = 0;
+		usb_switch_select(oldusbstatus);
+		if(usbstatus)
+			UsbIndicator(1);
+	}
+
+	return size;
+}
+
+static DEVICE_ATTR(tethering, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, tethering_switch_show, tethering_switch_store);
+
+
+static ssize_t dock_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	if (g_dock == 0)
+		return sprintf(buf, "0\n");
+	else if (g_dock == 1)
+		return sprintf(buf, "1\n");
+	else if (g_dock == 2)
+		return sprintf(buf, "2\n");
+}
+
+static ssize_t dock_switch_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
+{
+	if (strncmp(buf, "0", 1) == 0)
+	{
+		printk("remove dock\n");
+		g_dock = 0;
+	}
+	else if (strncmp(buf, "1", 1) == 0)
+	{
+		printk("home dock inserted\n");
+		g_dock = 1;
+	}
+	else if (strncmp(buf, "2", 1) == 0)
+	{
+		printk("car dock inserted\n");
+		g_dock = 2;
+	}
+
+	return size;
+}
+
+static DEVICE_ATTR(dock, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, dock_switch_show, dock_switch_store);
+
+
+
+
+static int askinitstatus=0;
+static ssize_t AskInitStatusSel_switch_show(struct device *dev, struct device_attribute *attr, char *buf)
+{	
+	if(askinitstatus == 2)
+		return sprintf(buf, "%s\n", "START");
+	else
+		return sprintf(buf, "%s\n", "STOP");
+}
+
+static ssize_t AskInitStatusSel_switch_store(struct device *dev, struct device_attribute *attr,	const char *buf, size_t size)
+{
+	askinitstatus = askinitstatus + 1;
+
+	return size;
+}
+
+static DEVICE_ATTR(AskInitStatusSel, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, AskInitStatusSel_switch_show, AskInitStatusSel_switch_store);
+
+
+// TODO : what should s1_froyo use?
+#if 1 //P1_proyo
+static ssize_t get_SwitchingInitValue(struct device *dev, struct device_attribute *attr,	char *buf)
+{	
+	return snprintf(buf, 12, "%s\n", switchinginitvalue);
+}
+#else //S1
 static ssize_t get_SwitchingInitValue(struct device *dev, struct device_attribute *attr,	const char *buf)
 {	
 	return snprintf(buf, 12, "%d\n", switchinginitvalue);
 }
+#endif
 
 static DEVICE_ATTR(SwitchingInitValue, S_IRUGO, get_SwitchingInitValue, NULL);
 
-#if 1 //20100601_inchul
-static ssize_t HWrevision_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%x\n", HWREV);
-} 
-
-static ssize_t HWrevision_store(
-		struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t size)
-{
-    DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
-
-	return 0;
-}
-
-/*sysfs for HW Board revision */
-static DEVICE_ATTR(HWrevision, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, HWrevision_show, HWrevision_store);
-#endif
-
-#ifdef FEATURE_TOOL_LAUNCHER
-//BAHK 2010.06.01 When tool_launcher is modified, the function below is called. The buffer should have the value ON or OFF.
-// if OFF, the mass storage device will not be shown as a CD ROM drive.
-#define DO_SCSI_CMD_TEMP_BUFFER_SIZE 5
-static ssize_t set_tool_launcher_setting_value(struct device *dev, struct device_attribute *attr,const char *buf, size_t size)
-{	
-    DEBUG_TL("set_tool_launcher_setting_value: TL -> %s", buf);
-    if(strncmp(buf, "ON", 2) == 0)
-        set_tool_launcher_setting(TOOL_LAUNCHER_STATE_ENABLED_READY);
-    else if(strncmp(buf, "OFF", 3) == 0)
-        set_tool_launcher_setting(TOOL_LAUNCHER_STATE_DISABLED);
-    else
-        set_tool_launcher_setting(TOOL_LAUNCHER_STATE_DISABLED);
-	return 0;
-}
-static DEVICE_ATTR(tool_launcher, S_IRUGO |S_IWUGO | S_IRUSR | S_IWUSR, NULL, set_tool_launcher_setting_value);
-#endif
 
 int  FSA9480_PMIC_CP_USB(void)
 {
-	int switch_sel;
-	int usb_sel;
-
+	int usb_sel = 0;
 
 	if (sec_get_param_value)
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
@@ -1039,15 +1033,13 @@ int  FSA9480_PMIC_CP_USB(void)
 	usb_sel = switch_sel & (int)(USB_SEL_MASK);
 
 	return usb_sel;
-
 }
 
-int check_reg=0;
-extern unsigned int HWREV;
 
+int check_reg=0;
 void FSA9480_Enable_CP_USB(u8 enable)
 {
-	u8 data = 0;
+	struct i2c_client *client = fsa9480_i2c_client;
 	byte reg_value=0;
 	byte reg_address=0x0D;
 
@@ -1062,68 +1054,31 @@ void FSA9480_Enable_CP_USB(u8 enable)
 		Set_MAX8998_PM_ADDR(reg_address,&reg_value,1);
 		check_reg = reg_value;
 			
-#if 1 //20100405_inchul
-/*
-    Added source for the below issue.
-
-    1. Connect  the UART cable     
-    2. Enter '**87284 or *#7284#'
-    3. Select the USB path as Modem or PDA
-    4. If user chooses PDA, UART is disconnected
-*/
-
-   if(MicroJigUARTOffStatus)
-   {
-    		mdelay(10);
-    		fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1E);	   
-   }
-   else
-   {
 		mdelay(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_MANUALSW1, 0x90);	
+		fsa9480_write(client, REGISTER_MANUALSW1, 0x48);  // D+/- switching by Audio_L/R in HW04
 
 		mdelay(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1A);	
-   }   
-#else
-		mdelay(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_MANUALSW1, 0x90);	// D+/- switching by V_Audio_L/R in HW03
-
-		mdelay(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1A);;	//manual switching
-#endif
+		fsa9480_write(client, REGISTER_CONTROL, 0x1A);	
 
 	}
 	else
 	{
 		printk("[FSA9480_Enable_AP_USB] Enable AP USB\n");
 		Get_MAX8998_PM_ADDR(reg_address, &reg_value, 1); // read 0x0D register
-
+	
 		if(askonstatus||mtp_mode_on)
 		ap_usb_power_on(0);
 		else
 		ap_usb_power_on(1);
 		mdelay(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1E);	
-
-	#if 0	
-	mdelay(10);
-	reg_value = 0x40;
-	Set_MAX8998_PM_ADDR(reg_address,&reg_value,1);
-		
-	mdelay(10);
-	fsa9480_write(&fsa9480_i2c_client, REGISTER_MANUALSW1, 0x90);	
-	
-	mdelay(10);
-	fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1A); 
-	#endif
+		fsa9480_write(client, REGISTER_CONTROL, 0x1E);
 	}
-
 }
 
-#if 0 //20100705_inchul
+
 void FSA9480_Enable_SPK(u8 enable)
 {
+	struct i2c_client *client = fsa9480_i2c_client;
 	u8 data = 0;
 	byte reg_value=0;
 	byte reg_address=0x0D;
@@ -1140,40 +1095,31 @@ void FSA9480_Enable_SPK(u8 enable)
 		check_reg = reg_value;
 			
 		msleep(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_MANUALSW1, 0x48);	// D+/- switching by Audio_L/R : 20100518_inchul...
+		fsa9480_write(client, REGISTER_MANUALSW1, 0x90);	// D+/- switching by V_Audio_L/R in HW03
 		msleep(10);
-		fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1A);	//manual switching
+		fsa9480_write(client, REGISTER_CONTROL, 0x1A);	//manual switching
 
 	}
 }
-#endif
 
-
-void UsbIndicator(u8 state)
-{
-	switch_set_state(&indicator_dev, state);
-}
-
-#if 1 //20100630_inchul
-void Usb_Dock_Detector(u8 state)
-{
-	switch_set_state(&switch_dock_detection, state);
-}
-#endif
 
 extern void askon_gadget_disconnect(void);
 extern int s3c_usb_cable(int connected);
+
 extern void vps_status_change(int status);
 extern void car_vps_status_change(int status);
-#ifdef FEATURE_TOOL_LAUNCHER
-extern void set_tool_launcher_mode();
-#endif
+byte chip_error=0;
+int uUSB_check_finished = 0;
+EXPORT_SYMBOL(uUSB_check_finished);
+
 
 void FSA9480_ProcessDevice(u8 dev1, u8 dev2, u8 attach)
 {
+	DEBUG_FSA9480("[FSA9480] %s (dev1 : 0x%x, dev2 : 0x%x)\n", __func__, dev1, dev2);
 
-	DEBUG_FSA9480("FSA9480_ProcessDevice function!!!!\n");
-	printk("[FSA9480]FSA INTR = dev1 : 0x%x, dev2 : 0x%x, Attach : 0x%x\n",dev1, dev2, attach);
+	if(!attach && !chip_error && (mtp_mode_on == 1))
+		chip_error = 0xAE;
+
 	if(dev1)
 	{
 		switch(dev1)
@@ -1184,84 +1130,82 @@ void FSA9480_ProcessDevice(u8 dev1, u8 dev2, u8 attach)
 					DEBUG_FSA9480("FSA9480_DEV_TY1_AUD_TY1 --- ATTACH\n");
 				else
 					DEBUG_FSA9480("FSA9480_DEV_TY1_AUD_TY1 --- DETACH\n");
-			break;
+				break;
 
 			case FSA9480_DEV_TY1_AUD_TY2:
 				DEBUG_FSA9480("Audio Type2 ");
-			break;
+				break;
 
 			case FSA9480_DEV_TY1_USB:
-			{
-				DEBUG_FSA9480("USB attach or detach: %d",attach);
+				DEBUG_FSA9480("USB attach or detach: %d\n",attach);
 				if(attach & FSA9480_INT1_ATTACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY1_USB --- ATTACH\n");
 					MicroUSBStatus = 1;
-					log_via_usb = log_usb_enable; //denis
-					#if 0
+					log_via_usb = log_usb_enable;
+#if 0
 					if(connectivity_switching_init_state)
-						s3c_usb_cable(1);		
-					#endif		
+						s3c_usb_cable(1);
+#endif
 					usb_switch_state();
 					if(!askonstatus)
 						UsbIndicator(1);
 					else
-						inaskonstatus = 0;						
-#ifdef FEATURE_TOOL_LAUNCHER
-                    if(is_tool_launcher_enabled())
-                    {
-                        Ap_Cp_Switch_Config(AP_USB_MODE);   
-                        usb_switching_value_update(SWITCH_PDA);
-						// Vova: switch to UMS and keep the current mode
-						set_tool_launcher_mode();
-                    }
-#endif
-
+						inaskonstatus = 0;				
+					uUSB_check_finished = 1;  // finished
 				}
 				else if(attach & FSA9480_INT1_DETACH)
 				{	
 					MicroUSBStatus = 0;
 					inaskonstatus = 0;
-					#if 0
+					chip_error = 0;
+#if 0
 					if(connectivity_switching_init_state)
-						s3c_usb_cable(0);							
-					#endif							
+						s3c_usb_cable(0);
+#endif
 					UsbIndicator(0);
 					askon_gadget_disconnect();
 					DEBUG_FSA9480("FSA9480_DEV_TY1_USB --- DETACH\n");
-#ifdef FEATURE_TOOL_LAUNCHER
-                    if(is_tool_launcher_enabled())
-                   {
-                        set_tool_launcher_setting(TOOL_LAUNCHER_STATE_ENABLED_READY);
-                   }
-#endif
+					uUSB_check_finished = 0;  // finished
 				}
-			}
-			break;
+				break;
 
 			case FSA9480_DEV_TY1_UART:
-				DEBUG_FSA9480("UART \n");
-			break;
+				DEBUG_FSA9480("UART\n");
+				break;
 
 			case FSA9480_DEV_TY1_CAR_KIT:
-				DEBUG_FSA9480("Carkit \n");
-			break;
+				DEBUG_FSA9480("Carkit\n");
+				break;
 
 			case FSA9480_DEV_TY1_USB_CHG:
-				DEBUG_FSA9480("USB \n");
-			break;
+				DEBUG_FSA9480("USB\n");
+				break;
 
 			case FSA9480_DEV_TY1_DED_CHG:
-				DEBUG_FSA9480("Dedicated Charger \n");
-			break;
+				{
+					if(attach & FSA9480_INT1_ATTACH)
+					{
+						DEBUG_FSA9480("Dedicated Charger ATTACH\n");
+						uUSB_check_finished = 1;  // finished
+						//A9480_ChangePathToAudio(TRUE);
+					}					
+					else if(attach & FSA9480_INT1_DETACH)
+					{				
+						DEBUG_FSA9480("Dedicated Charger DETACH\n");
+						uUSB_check_finished = 0;  // finished
+						//A9480_ChangePathToAudio(FALSE);
+					}
+				}
+				break;
 
 			case FSA9480_DEV_TY1_USB_OTG:
-				DEBUG_FSA9480("USB OTG \n");
-			break;
+				DEBUG_FSA9480("USB OTG\n");
+				break;
 
 			default:
-				DEBUG_FSA9480("Unknown device \n");
-			break;
+				DEBUG_FSA9480("Unknown device\n");
+				break;
 		}
 
 	}
@@ -1276,40 +1220,40 @@ void FSA9480_ProcessDevice(u8 dev1, u8 dev2, u8 attach)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_USB_ON --- ATTACH\n");
 					MicroJigUSBOnStatus = 1;
-					#if 0	
+#if 0
 					if(connectivity_switching_init_state)
-						s3c_usb_cable(1);							
-					#endif							
+						s3c_usb_cable(1);
+#endif
 					usb_switch_state();
 					if(!askonstatus)
 						UsbIndicator(1);
 					else
 						inaskonstatus = 0;				
-
 				}
 				else if(attach & FSA9480_INT1_DETACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_USB_ON --- DETACH\n");
+					chip_error = 0;
 					MicroJigUSBOnStatus = 0;
 					inaskonstatus = 0;
-#if 0	
+#if 0
 					if(connectivity_switching_init_state)
 						s3c_usb_cable(0);							
-#endif		
+#endif
 					UsbIndicator(0);
 					askon_gadget_disconnect();					
 				}
-			break;
+				break;
 
 			case FSA9480_DEV_TY2_JIG_USB_OFF:
 				if(attach & FSA9480_INT1_ATTACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_USB_OFF --- ATTACH\n");
 					MicroJigUSBOffStatus = 1;
-#if 0	
+#if 0
 					if(connectivity_switching_init_state)
-						s3c_usb_cable(1);							
-#endif		
+						s3c_usb_cable(1);
+#endif
 					usb_switch_state();
 					if(!askonstatus)
 						UsbIndicator(1);
@@ -1319,169 +1263,151 @@ void FSA9480_ProcessDevice(u8 dev1, u8 dev2, u8 attach)
 				else if(attach & FSA9480_INT1_DETACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_USB_OFF --- DETACH\n");
+					chip_error = 0;
 					MicroJigUSBOffStatus = 0;
 					inaskonstatus = 0;
-#if 0	
+#if 0
 					if(connectivity_switching_init_state)
 						s3c_usb_cable(0);
-#endif				
+#endif
 					UsbIndicator(0);
 					askon_gadget_disconnect();					
 				}
 				DEBUG_FSA9480("JIG USB OFF \n");
-			break;
+				break;
 
 			case FSA9480_DEV_TY2_JIG_UART_ON:
 				if(attach & FSA9480_INT1_ATTACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_UART_ON --- ATTACH\n");
-#if 1 //20100630_inchul
-					Usb_Dock_Detector(SEC_CAR_DOCK_DEVICE);
-#endif
-					car_vps_status_change(1);
-					//20100705_inchul... FSA9480_Enable_SPK(1);
+					set_dock_state((int)CAR_DOCK_INSERTED);
+					g_dock = CAR_DOCK_INSERTED;
 				}
 				else
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_UART_ON --- DETACH\n");
-#if 1 //20100630_inchul
-					Usb_Dock_Detector(SEC_DOCK_NO_DEVICE);
-#endif
-					car_vps_status_change(0);
+ 			       set_dock_state((int)DOCK_REMOVED);
+					g_dock = DOCK_REMOVED;
+
 				}
-				DEBUG_FSA9480("JIG UART ON \n");
-			break;
+				DEBUG_FSA9480("JIG UART ON\n");
+				break;
 
 			case FSA9480_DEV_TY2_JIG_UART_OFF:
 				if(attach & FSA9480_INT1_ATTACH)
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_UART_OFF --- ATTACH\n");
 					MicroJigUARTOffStatus = 1;
-					//uart_insert_switch_state();					
+					uart_insert_switch_state();
 				}
 				else
 				{
 					DEBUG_FSA9480("FSA9480_DEV_TY2_JIG_UART_OFF --- DETACH\n");
 					MicroJigUARTOffStatus = 0;
-					//uart_remove_switch_state();										
+					uart_remove_switch_state();
 				}
-				DEBUG_FSA9480("JIT UART OFF \n");
-			break;
+				DEBUG_FSA9480("JIT UART OFF\n");
+				break;
 
 			case FSA9480_DEV_TY2_PDD:
 				DEBUG_FSA9480("PPD \n");
-			break;
+				break;
 
 			case FSA9480_DEV_TY2_TTY:
-				DEBUG_FSA9480("TTY \n");
-			break;
+				DEBUG_FSA9480("TTY\n");
+				break;
 
 			case FSA9480_DEV_TY2_AV:
-			{
-				DEBUG_FSA9480("AudioVideo \n");
-				if(attach & FSA9480_INT1_ATTACH){
-						DEBUG_FSA9480("FSA9480_DEV_TY2_AV --- ATTACH\n");
-#if 1 //20100630_inchul
-						Usb_Dock_Detector(SEC_DESK_DOCK_DEVICE);
-#endif
-						vps_status_change(1);
-						//20100705_inchul... FSA9480_Enable_SPK(1);
-				}
-				else{
-						DEBUG_FSA9480("FSA9480_DEV_TY2_AV --- DETACH\n");
-#if 1 //20100630_inchul
-						Usb_Dock_Detector(SEC_DOCK_NO_DEVICE);
-#endif	
-						vps_status_change(0);
-				}
-			}
-			break;
+				DEBUG_FSA9480("AudioVideo\n");
+				if (attach & FSA9480_INT1_DETACH) {
+					DEBUG_FSA9480("FSA9480_disable_spk\n");					
+					set_dock_state((int)DOCK_REMOVED);
+					g_dock = DOCK_REMOVED;
+					}
+				else {
+					DEBUG_FSA9480("FSA9480_enable_spk\n");
+					set_dock_state((int)HOME_DOCK_INSERTED);
+					FSA9480_Enable_SPK(1);
+					g_dock = HOME_DOCK_INSERTED;
+					}
+				break;
 
 			default:
-				DEBUG_FSA9480("Unknown device \n");
-			break;
+				DEBUG_FSA9480("Unknown device\n");
+				break;
 		}
 	}
+
+	if((attach == FSA9480_INT1_ATTACH) && (chip_error == 0xAE) && (mtp_mode_on == 1)){
+		ap_usb_power_on(1);
+		chip_error = 0;
+		}
 
 }
 
 EXPORT_SYMBOL(FSA9480_ProcessDevice);
 
 
-#ifdef CONFIG_KERNEL_DEBUG_SEC	// hanapark_DG28
-extern void kernel_sec_clear_upload_magic_number(void);
-extern void kernel_sec_set_upload_magic_number(void);
-#endif
-
-void FSA9480_ReadIntRegister(void)
+void FSA9480_ReadIntRegister(struct work_struct *work)
 {
+	struct i2c_client *client = fsa9480_i2c_client;
+	u8 interrupt1 ,interrupt2 ,device1, device2, temp;
 
-	u8 interrupt1 , device1, device2, temp;
-	u8 data = 0;
-	int i;
+	DEBUG_FSA9480("[FSA9480] %s\n", __func__);
 
-	DEBUG_FSA9480("FSA9480_ReadIntRegister function!!!!\n");
+	 fsa9480_read(client, REGISTER_INTERRUPT1, &interrupt1);
+ 	msleep(5);
 
+	 fsa9480_read(client, REGISTER_INTERRUPT2, &interrupt2);
+ 	msleep(5);
 
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_INTERRUPT1, &interrupt1);
+	 fsa9480_read(client, REGISTER_DEVICETYPE1, &device1);
+ 	msleep(5);
 
- 	 msleep(5);
-	
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE1, &device1);
-
- 	 msleep(5);
-
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE2, &device2);
+	 fsa9480_read(client, REGISTER_DEVICETYPE2, &device2);
 
 	usb_state = (device2 << 8) | (device1 << 0);
 
 	if(interrupt1 & FSA9480_INT1_ATTACH)
 	{
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-		kernel_sec_clear_upload_magic_number(); // hanapark_DG28
-#endif
-
 		fsa9480_device1 = device1;
 		fsa9480_device2 = device2;
+
 		if(fsa9480_device1 != FSA9480_DEV_TY1_DED_CHG){
-			DEBUG_FSA9480("FSA9480_enable LDO8\n");
-			s3c_usb_cable(1);//mkh
-			}
+			//DEBUG_FSA9480("FSA9480_enable LDO8\n");
+			s3c_usb_cable(1);
+		}
+
 		if(fsa9480_device1&FSA9480_DEV_TY1_CAR_KIT)
 		{
 			msleep(5);
-			fsa9480_write(&fsa9480_i2c_client, REGISTER_CARKITSTATUS, 0x02);
+			fsa9480_write(client, REGISTER_CARKITSTATUS, 0x02);
 
 			msleep(5);
-			fsa9480_read(&fsa9480_i2c_client, REGISTER_CARKITINT1, &temp);
+			fsa9480_read(client, REGISTER_CARKITINT1, &temp);
 		}
 	}
 
- 	 msleep(5);
+ 	msleep(5);
 
-
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1E);	 
-
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_INTERRUPTMASK1, 0xFC);
-
-#if 1 //20100618_inchul... To block the A/V Charging interrupt
-	 msleep(5);
-
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_INTERRUPTMASK2, 0xFF);
+	 fsa9480_write(client, REGISTER_CONTROL, 0x1E);
+	 fsa9480_write(client, REGISTER_INTERRUPTMASK1, 0xFC);
+#if defined(CONFIG_ARIES_NTT) // Modify NTTS1
+	 //syyoon 20100724	 fix for SC - Ad_10_2nd - 0006. When USB is removed, sometimes attatch value gets 0x00
+	 if((fsa9480_device1 == FSA9480_DEV_TY1_USB) && (!interrupt1)){
+		 printk("[FSA9480] dev1=usb, attach change is from 0 to 2\n");
+		 interrupt1 = FSA9480_INT1_DETACH;
+	 }
 #endif
-
-	 FSA9480_ProcessDevice(fsa9480_device1, fsa9480_device2, interrupt1);	 
+	 FSA9480_ProcessDevice(fsa9480_device1, fsa9480_device2, interrupt1);
 
 	if(interrupt1 & FSA9480_INT1_DETACH)
 	{
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-		kernel_sec_set_upload_magic_number(); // hanapark_DG28
-#endif
-
 		if(fsa9480_device1 != FSA9480_DEV_TY1_DED_CHG){
-		DEBUG_FSA9480("FSA9480_disable LDO8\n");
-		s3c_usb_cable(0);
+			//DEBUG_FSA9480("FSA9480_disable LDO8\n");
+			s3c_usb_cable(0);
 		}
+
 		fsa9480_device1 = 0;
 		fsa9480_device2 = 0;
 	}
@@ -1494,7 +1420,10 @@ EXPORT_SYMBOL(FSA9480_ReadIntRegister);
 
 irqreturn_t fsa9480_interrupt(int irq, void *ptr)
 {
-	disable_irq(IRQ_FSA9480_INTB);
+	printk("%s\n", __func__);
+	disable_irq_nosync(IRQ_FSA9480_INTB);
+	
+	uUSB_check_finished =0;  // reset
 
 	queue_work(fsa9480_workqueue, &fsa9480_work);
 
@@ -1505,53 +1434,41 @@ EXPORT_SYMBOL(fsa9480_interrupt);
 
 void fsa9480_interrupt_init(void)
 {		
-	 s3c_gpio_cfgpin(GPIO_JACK_INT_N, S5PC11X_GPH2_7_EXT_INT32_7);
-	 s3c_gpio_setpull(GPIO_JACK_INT_N, S3C_GPIO_PULL_NONE);
-	 set_irq_type(IRQ_FSA9480_INTB, IRQ_TYPE_EDGE_FALLING);
+	s3c_gpio_cfgpin(GPIO_JACK_nINT, S3C_GPIO_SFN(GPIO_JACK_nINT_AF));
+	s3c_gpio_setpull(GPIO_JACK_nINT, S3C_GPIO_PULL_NONE);
+	set_irq_type(IRQ_FSA9480_INTB, IRQ_TYPE_EDGE_FALLING);
 
 	 if (request_irq(IRQ_FSA9480_INTB, fsa9480_interrupt, IRQF_DISABLED, "FSA9480 Detected", NULL)) 
 		 DEBUG_FSA9480("[FSA9480]fail to register IRQ[%d] for FSA9480 USB Switch \n", IRQ_FSA9480_INTB);
-
 }
 EXPORT_SYMBOL(fsa9480_interrupt_init);
 
 
-void fsa9480_init(void)
+void fsa9480_chip_init(void)
 {
+	struct i2c_client *client = fsa9480_i2c_client;
 
-	 u8 data = 0;
+	fsa9480_write(client, HIDDEN_REGISTER_MANUAL_OVERRDES1, 0x01); //RESET
 
-	 fsa9480_write(&fsa9480_i2c_client, HIDDEN_REGISTER_MANUAL_OVERRDES1, 0x01); //RESET
+	 mdelay(10);
+	 fsa9480_write(client, REGISTER_CONTROL, 0x1E);
 
 	 mdelay(10);
 
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICEID, &data);
-
-	 mdelay(10);
-	
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1E);
+	 fsa9480_write(client, REGISTER_INTERRUPTMASK1, 0xFC);
 
 	 mdelay(10);
 
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_INTERRUPTMASK1, 0xFC);
-
-#if 1 //20100618_inchul... To block the A/V Charging interrupt
-	 mdelay(10);
-
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_INTERRUPTMASK2, 0xFF);
-#endif
+	 fsa9480_read(client, REGISTER_DEVICETYPE1, &fsa9480_device1);
 
 	 mdelay(10);
 
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE1, &fsa9480_device1);
-
-	 mdelay(10);
-
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE2, &fsa9480_device2);
-	 
+	 fsa9480_read(client, REGISTER_DEVICETYPE2, &fsa9480_device2);
 }
-EXPORT_SYMBOL(fsa9480_init);
 
+
+// TODO : need it?
+#if 0
 static int fsa9480_modify(struct i2c_client *client, u8 reg, u8 data, u8 mask)
 {
    u8 original_value, modified_value;
@@ -1578,15 +1495,15 @@ void fsa9480_init_status(void)
 	
 	fsa9480_read(&fsa9480_i2c_client, 0x13, &pData);
 }
+#endif
 
 u8 FSA9480_Get_I2C_USB_Status(void)
 {
-	u8 device1, device2, usbstatus;
-
+	u8 device1, device2;
 	
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE1, &device1);
-  	 msleep(5);
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE2, &device2);
+	fsa9480_read(fsa9480_i2c_client, REGISTER_DEVICETYPE1, &device1);
+  	msleep(5);
+	fsa9480_read(fsa9480_i2c_client, REGISTER_DEVICETYPE2, &device2);
 
 	if((device1==FSA9480_DEV_TY1_USB)||(device2==FSA9480_DEV_TY2_JIG_USB_ON)||(device2==FSA9480_DEV_TY2_JIG_USB_OFF))
 		return 1;
@@ -1595,120 +1512,38 @@ u8 FSA9480_Get_I2C_USB_Status(void)
 }
 EXPORT_SYMBOL(FSA9480_Get_I2C_USB_Status);
 
-#ifdef FEATURE_TOOL_LAUNCHER
-static int user_usb_mode = 0;
-
-/*
-* Function name: void set_user_usb_mode_setting(int mode)
-* Function: Sets user_usb_mode.
-* Comment: To save user usb mode. This will be used to return the mode once TL is done.
-*/
-void set_user_usb_mode_setting(int mode)
-{
-    DEBUG_TL("user setting is set to %d \n", mode);
-    user_usb_mode = mode;
-    return;
-}
-
-/*
-* Function name: void get_user_usb_mode_setting(int mode)
-* Function: Gets user_usb_mode.
-* Comment: Returns user usb mode. This is used to return the mode TL needs to return once it is done.
-*/
-int get_user_usb_mode_setting(void)
-{
-    DEBUG_TL("user setting is %d \n", user_usb_mode);
-    return user_usb_mode;
-}
-
-int is_original_setting_modem(void)
-{
-    int switch_sel;
-    int usb_sel;
-    if (sec_get_param_value){
-        sec_get_param_value(__SWITCH_SEL, &switch_sel);
-        cancel_delayed_work(&micorusb_init_work);
-        }
-    else{
-        schedule_delayed_work(&micorusb_init_work, msecs_to_jiffies(200));      
-        return;
-        }
-    usb_sel = switch_sel & (int)(USB_SEL_MASK);
-    if(usb_sel == 0)
-    {
-        return 1;
-    }
-    return 0;
-}
-#endif
 
 void connectivity_switching_init(struct work_struct *ignored)
 {
-	int switch_sel;
 	int usb_sel,uart_sel,samsung_kies_sel,ums_sel,mtp_sel,vtp_sel,askon_sel;
-	int index;
 	int lpm_mode_check = charging_mode_get();
 
 	if (sec_get_param_value){
 		sec_get_param_value(__SWITCH_SEL, &switch_sel);
 		cancel_delayed_work(&micorusb_init_work);
-		}
+	}
 	else{
 		schedule_delayed_work(&micorusb_init_work, msecs_to_jiffies(200));		
 		return;
-		}
+	}
 
 	if(BOOTUP){
 		BOOTUP = 0; 
 		otg_phy_init(); //USB Power on after boot up.
-		}
+	}
+
+	printk("[FSA9480]connectivity_switching_init = switch_sel : 0x%x\n",switch_sel);
 
 	usb_sel = switch_sel & (int)(USB_SEL_MASK);
 	uart_sel = (switch_sel & (int)(UART_SEL_MASK)) >> 1;
 	samsung_kies_sel = (switch_sel & (int)(USB_SAMSUNG_KIES_MASK)) >> 2;
 	ums_sel = (switch_sel & (int)(USB_UMS_MASK)) >> 3;
 	mtp_sel = (switch_sel & (int)(USB_MTP_MASK)) >> 4;
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
 	vtp_sel = (switch_sel & (int)(USB_VTP_MASK)) >> 5;
+#endif
 	askon_sel = (switch_sel & (int)(USB_ASKON_MASK)) >> 6;
 
-//	printk("[denis][connectivity_switching_init] Fatroty reset value : %x\n",factoryresetstatus); 
-//	printk("[denis][connectivity_switching_init] Fatroty reset value : %d\n",switch_sel); 
-
-#ifdef FEATURE_TOOL_LAUNCHER
-    if(is_tool_launcher_enabled())
-    {
-        if(usb_sel == 0)
-        {
-            //Ap_Cp_Switch_Config(CP_USB_MODE);
-            DEBUG_TL("BAHK usb is set to MODEM. saving -1 to usb mode setting.\n");
-            set_user_usb_mode_setting(-1);
-            Ap_Cp_Switch_Config(AP_USB_MODE);   
-            usb_switching_value_update(SWITCH_PDA);
-        }
-        else
-        {
-            DEBUG_TL("BAHK usb_sel does not equal MODEM. Setting USB to PDA. \n");
-            Ap_Cp_Switch_Config(AP_USB_MODE);   
-            usb_switching_value_update(SWITCH_PDA);
-        }
-        if(uart_sel){
-            Ap_Cp_Switch_Config(AP_UART_MODE);  
-            uart_switching_value_update(SWITCH_PDA);
-#if 1 //20100531_inchul
-            uart_current_owner = 1; 
-#endif   
-        }
-        else{
-            Ap_Cp_Switch_Config(CP_UART_MODE);  
-            uart_switching_value_update(SWITCH_MODEM);
-#if 1 //20100531_inchul
-            uart_current_owner = 0; 
-#endif      
-        }
-    }
-    else
-    {
-#endif
 	if((switch_sel == 0x1) || (factoryresetstatus == 0xAE)){
 		PathSelStore(AP_USB_MODE);
 		Ap_Cp_Switch_Config(AP_USB_MODE);	
@@ -1717,129 +1552,82 @@ void connectivity_switching_init(struct work_struct *ignored)
 		PathSelStore(CP_UART_MODE);
 		Ap_Cp_Switch_Config(CP_UART_MODE);	
 		uart_switching_value_update(SWITCH_MODEM);
-#if 1 //20100531_inchul
-			uart_current_owner = 0;	
-#endif       
-		}
+	}
 	else{
-		if(usb_sel){
-			Ap_Cp_Switch_Config(AP_USB_MODE);	
-			usb_switching_value_update(SWITCH_PDA);
-			}
-		else{
+	    if(usb_sel) {
+		    Ap_Cp_Switch_Config(AP_USB_MODE);
+		    usb_switching_value_update(SWITCH_PDA);
+	    }
+	    else {
 			if(MicroJigUARTOffStatus){
-				Ap_Cp_Switch_Config(AP_USB_MODE);
-				}
-			else{
-				Ap_Cp_Switch_Config(CP_USB_MODE);
-				usb_switching_value_update(SWITCH_MODEM);
-				}
+			    Ap_Cp_Switch_Config(AP_USB_MODE);
 			}
-	
-		if(uart_sel){
-			Ap_Cp_Switch_Config(AP_UART_MODE);	
-			uart_switching_value_update(SWITCH_PDA);
-#if 1 //20100531_inchul
-			uart_current_owner = 1;	
-#endif   
-			}
-		else{
-			Ap_Cp_Switch_Config(CP_UART_MODE);	
-			uart_switching_value_update(SWITCH_MODEM);
-#if 1 //20100531_inchul
-			uart_current_owner = 0;	
-#endif      
-			}
-		}
-#ifdef FEATURE_TOOL_LAUNCHER
-    }
-#endif
-        
+		    else {
+			    Ap_Cp_Switch_Config(CP_USB_MODE);
+			    usb_switching_value_update(SWITCH_MODEM);
+		    }
+	    }
 
-/*Turn off usb power when LPM mode*/
-		if(lpm_mode_check)
-			otg_phy_off();
+	    if(uart_sel) {
+		    Ap_Cp_Switch_Config(AP_UART_MODE);
+		    uart_switching_value_update(SWITCH_PDA);
+	    }
+	    else {
+		    Ap_Cp_Switch_Config(CP_UART_MODE);
+		    uart_switching_value_update(SWITCH_MODEM);
+	    }
+	}
+
+	/*Turn off usb power when LPM mode*/
+	if(lpm_mode_check)
+		otg_phy_off();
 			
 		switching_value_update();	
-
-#ifdef FEATURE_TOOL_LAUNCHER
-        if(is_tool_launcher_enabled())
-        {
-            if(mtp_sel)
-            {
-                DEBUG_TL("BAHK mtp_sel is 1. \n");
-                usb_switch_select(USBSTATUS_MTPONLY);
-                /*USB Power off till MTP Appl launching*/               
-                mtp_mode_on = 1;
-                ap_usb_power_on(0);
-                set_user_usb_mode_setting(USBSTATUS_MTPONLY);
-            }
-            else if(usb_sel == 0)
-            {
-                set_user_usb_mode_setting(-1);
-            }
-            else
-            {
-                set_user_usb_mode_setting(USBSTATUS_SAMSUNG_KIES);
-            }
-            set_tool_launcher_setting(TOOL_LAUNCHER_STATE_ENABLED_READY);
-            DEBUG_TL("BAHK setting to UMS \n");
-            set_tool_launcher_mode();
-        }
-        else
-        {
-#endif
 
 	if((switch_sel == 1) || (factoryresetstatus == 0xAE)){
 		usb_switch_select(USBSTATUS_SAMSUNG_KIES);
 		mtp_mode_on = 1;
 		ap_usb_power_on(0);
 		UsbMenuSelStore(0);	
-		}
+	}
 	else{
 		if(usb_sel){
 			if(samsung_kies_sel){
 				usb_switch_select(USBSTATUS_SAMSUNG_KIES);
-/*USB Power off till MTP Appl launching*/				
+				/*USB Power off till MTP Appl launching*/				
 				mtp_mode_on = 1;
 				ap_usb_power_on(0);
-			}else if(mtp_sel){
+			}
+			else if(mtp_sel){
 				usb_switch_select(USBSTATUS_MTPONLY);
-/*USB Power off till MTP Appl launching*/				
+				/*USB Power off till MTP Appl launching*/				
 				mtp_mode_on = 1;
 				ap_usb_power_on(0);
-			}else if(ums_sel){
+			}
+			else if(ums_sel){
 				usb_switch_select(USBSTATUS_UMS);
-			}else if(vtp_sel){
+			}
+#if !defined(CONFIG_ARIES_NTT) // disable tethering xmoondash
+			else if(vtp_sel){
 				usb_switch_select(USBSTATUS_VTP);
-			}else if(askon_sel){
+			}
+#endif
+			else if(askon_sel){
 				usb_switch_select(USBSTATUS_ASKON);
 			}			
-			}
 		}
-#ifdef FEATURE_TOOL_LAUNCHER
-        }
-#endif
+	}
 
-	if(!FSA9480_Get_USB_Status()){
+	if(!FSA9480_Get_USB_Status()) {
 		s3c_usb_cable(1);
 		mdelay(5);
 		s3c_usb_cable(0);
-		}
+	}
 
 	printk("[FSA9480]connectivity_switching_init = switch_sel : 0x%x\n",switch_sel);
-	//microusb_uart_status(1);
-	
-    connectivity_switching_init_state=1;
+	microusb_uart_status(1);
 
-#if 0 //20100618_inchul
-  if(fsa9480_device2 == FSA9480_DEV_TY2_JIG_UART_ON || fsa9480_device2 == FSA9480_DEV_TY2_AV){
-					FSA9480_Enable_SPK(1);    
-  }
-#endif 
-
-	//del_timer(&microusb_timer);
-	
+	connectivity_switching_init_state=1;
 }
 
 
@@ -1852,48 +1640,71 @@ static ssize_t print_switch_state(struct switch_dev *sdev, char *buf)
 {
 	int usbstatus;
 
+	if( mtp_power_off == 1 )
+	{
+		printk("USB power off for MTP\n");
+		mtp_power_off = 0;
+		return sprintf(buf, "%s\n", "RemoveOffline");
+	}
+
 	usbstatus = FSA9480_Get_USB_Status();
 
+//TODO : each platform require different noti
+#if 0 //froyo default
+    if(usbstatus){
+        return sprintf(buf, "%s\n", "online");
+    }
+    else{
+        return sprintf(buf, "%s\n", "offline");
+    }
+#elif 1 //P1
+    if(usbstatus){
+		if(currentusbstatus == USBSTATUS_VTP)
+			return sprintf(buf, "%s\n", "RemoveOffline");
+        else if((currentusbstatus== USBSTATUS_UMS) || (currentusbstatus== USBSTATUS_ADB))
+            return sprintf(buf, "%s\n", "ums online");
+        else
+            return sprintf(buf, "%s\n", "InsertOffline");
+    }
+    else{
+        if((currentusbstatus== USBSTATUS_UMS) || (currentusbstatus== USBSTATUS_ADB))
+            return sprintf(buf, "%s\n", "ums offline");
+        else
+            return sprintf(buf, "%s\n", "RemoveOffline");
+    }
+#else //S1
 	if(usbstatus){
 		if((currentusbstatus== USBSTATUS_UMS) || (currentusbstatus== USBSTATUS_ADB))
 			return sprintf(buf, "%s\n", "InsertOnline");
 		else
 			return sprintf(buf, "%s\n", "InsertOffline");
-		}
+	}
 	else{
 		if((currentusbstatus== USBSTATUS_UMS) || (currentusbstatus== USBSTATUS_ADB))
 			return sprintf(buf, "%s\n", "RemoveOnline");
 		else
 			return sprintf(buf, "%s\n", "RemoveOffline");
-		}		
+	}
+#endif
 }
 
 
-static int fsa9480_codec_probe(struct i2c_adapter *adap, int addr, int kind)
+static int fsa9480_codec_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
-	 int ret;
-	 unsigned int microusb_data;
-	 
-#ifdef CONFIG_JUPITER_VER_B4
-	 s3c_gpio_cfgpin( PMIC_I2C_SCL, S5PC11X_GPJ4_OUTPUT(3) );
-	 s3c_gpio_setpull( PMIC_I2C_SCL, S3C_GPIO_PULL_UP); 
-	 
-	 s3c_gpio_cfgpin( PMIC_I2C_SDA, S5PC11X_GPJ4_OUTPUT(0));
-	 s3c_gpio_setpull( PMIC_I2C_SDA, S3C_GPIO_PULL_UP); 
+	struct fsa9480_state *state;
+	struct device *dev = &client->dev;
+	u8 pData;
 
-	 s3c_gpio_cfgpin( GPIO_USB_SEL, S5PC11X_MP04_OUTPUT(0));
-	 s3c_gpio_setpull( GPIO_USB_SEL, S3C_GPIO_PULL_NONE); 
-#else
-	 s3c_gpio_cfgpin( GPIO_USB_SDA_28V, S5PC11X_GPJ3_OUTPUT(4));
-	 s3c_gpio_setpull( GPIO_USB_SDA_28V, S3C_GPIO_PULL_UP);	 
+	DEBUG_FSA9480("[FSA9480] %s\n", __func__);
 
-	 s3c_gpio_cfgpin( GPIO_USB_SCL_28V, S5PC11X_GPJ3_OUTPUT(5) );
-	 s3c_gpio_setpull( GPIO_USB_SCL_28V, S3C_GPIO_PULL_UP); 
-#endif
+	s3c_gpio_cfgpin(GPIO_USB_SCL_28V, S3C_GPIO_OUTPUT);
+	s3c_gpio_setpull(GPIO_USB_SCL_28V, S3C_GPIO_PULL_NONE);
 
-	 s3c_gpio_cfgpin( GPIO_UART_SEL, S5PC11X_MP05_OUTPUT(7) );
-	 s3c_gpio_setpull( GPIO_UART_SEL, S3C_GPIO_PULL_NONE);
+	s3c_gpio_cfgpin(GPIO_USB_SDA_28V, S3C_GPIO_OUTPUT);
+	s3c_gpio_setpull(GPIO_USB_SDA_28V, S3C_GPIO_PULL_NONE);
 
+	s3c_gpio_cfgpin(GPIO_UART_SEL, S3C_GPIO_OUTPUT );
+	s3c_gpio_setpull(GPIO_UART_SEL, S3C_GPIO_PULL_NONE);
 
 	if (device_create_file(switch_dev, &dev_attr_uart_sel) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_uart_sel.attr.name);
@@ -1903,15 +1714,15 @@ static int fsa9480_codec_probe(struct i2c_adapter *adap, int addr, int kind)
 
 	if (device_create_file(switch_dev, &dev_attr_usb_state) < 0)
 		DEBUG_FSA9480("[FSA9480]Failed to create device file(%s)!\n", dev_attr_usb_state.attr.name);
-
-	//denis
+	
+#if 1
 	if (device_create_file(switch_dev, &dev_attr_DMport) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_DMport.attr.name);
 
 	if (device_create_file(switch_dev, &dev_attr_DMlog) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_DMlog.attr.name);
-	
-	 
+#endif
+
 	if (device_create_file(switch_dev, &dev_attr_UsbMenuSel) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_UsbMenuSel.attr.name);
 	 
@@ -1930,245 +1741,75 @@ static int fsa9480_codec_probe(struct i2c_adapter *adap, int addr, int kind)
 	if (device_create_file(switch_dev, &dev_attr_AskOnStatus) < 0)
 		pr_err("Failed to create device file(%s)!\n", dev_attr_AskOnStatus.attr.name);			
 	
-#if 1 //20100601_inchul
-	if (device_create_file(switch_dev, &dev_attr_HWrevision) < 0)
-		pr_err("Failed to create device file(%s)!\n", dev_attr_HWrevision.attr.name);
-#endif
-#ifdef FEATURE_TOOL_LAUNCHER
-     //BAHK 2010.06.01 tool_launcher is set if the diag command for TL enabler is received. Look for it in ipc_rx_cfg.c
-    if (device_create_file(switch_dev, &dev_attr_tool_launcher) < 0)
-		pr_err("Failed to create device file(%s)!\n", dev_attr_tool_launcher.attr.name);
-#endif
+	if (device_create_file(switch_dev, &dev_attr_MtpInitStatusSel) < 0)
+		pr_err("Failed to create device file(%s)!\n", dev_attr_MtpInitStatusSel.attr.name);			
+	
+	if (device_create_file(switch_dev, &dev_attr_AskInitStatusSel) < 0)
+		pr_err("Failed to create device file(%s)!\n", dev_attr_AskInitStatusSel.attr.name);	
+	
+	if (device_create_file(switch_dev, &dev_attr_tethering) < 0)		
+		pr_err("Failed to create device file(%s)!\n", dev_attr_tethering.attr.name);
+
+	if (device_create_file(switch_dev, &dev_attr_dock) < 0)		
+		pr_err("Failed to create device file(%s)!\n", dev_attr_dock.attr.name);
 
 	 
 	 init_waitqueue_head(&usb_detect_waitq); 
 	 INIT_WORK(&fsa9480_work, FSA9480_ReadIntRegister);
 	 fsa9480_workqueue = create_singlethread_workqueue("fsa9480_workqueue");
-	 
 
-	 fsa9480_i2c_client.adapter = adap;
-	 fsa9480_i2c_client.addr = addr;
-
-	 ret = i2c_attach_client(&fsa9480_i2c_client);
-	 if (ret < 0) {
-		DEBUG_FSA9480("[FSA9480]failed to attach codec at addr %x\n", addr);
-		return -1;
+	 state = kzalloc(sizeof(struct fsa9480_state), GFP_KERNEL);
+	 if(!state) {
+		 dev_err(dev, "%s: failed to create fsa9480_state\n", __func__);
+		 return -ENOMEM;
 	 }
 
-	 indicator_dev.name = DRIVER_NAME;
-	 indicator_dev.print_name = print_switch_name;
-	 indicator_dev.print_state = print_switch_state;
-	 switch_dev_register(&indicator_dev);
+	indicator_dev.name = DRIVER_NAME;
+	indicator_dev.print_name = print_switch_name;
+	indicator_dev.print_state = print_switch_state;
+	switch_dev_register(&indicator_dev);
 
-#if 1 //20100630_inchul
-	 switch_dev_register(&switch_dock_detection);
-#endif
+	state->client = client;
+	fsa9480_i2c_client = client;
 
-	 fsa9480_init_status();
+	i2c_set_clientdata(client, state);
+	if(!fsa9480_i2c_client)
+	{
+		dev_err(dev, "%s: failed to create fsa9480_i2c_client\n", __func__);
+		return -ENODEV;
+	}
+
+	 /*clear interrupt mask register*/
+	fsa9480_read(fsa9480_i2c_client, REGISTER_CONTROL, &pData);
+	fsa9480_write(fsa9480_i2c_client, REGISTER_CONTROL, pData & ~INT_MASK);
 
 	 fsa9480_interrupt_init();
 
-	 fsa9480_init();
-	 
-	 INIT_DELAYED_WORK(&micorusb_init_work, connectivity_switching_init);
-	 schedule_delayed_work(&micorusb_init_work, msecs_to_jiffies(200));
+	 fsa9480_chip_init();
 
-	 
-	 //init_timer(&microusb_timer);
-	 //microusb_timer.expires = jiffies + msecs_to_jiffies(200);
-	 //microusb_timer.data = microusb_data;
-	 //microusb_timer.function = connectivity_switching_init;
-	 //add_timer(&microusb_timer);
-}
-EXPORT_SYMBOL(fsa9480_codec_probe);
+	INIT_DELAYED_WORK(&micorusb_init_work, connectivity_switching_init);
+	schedule_delayed_work(&micorusb_init_work, msecs_to_jiffies(200));
 
-static int fsa9480_i2c_suspend(struct platform_device *dev, pm_message_t state)
-{
-	return 0;
-}
-
-void fsa9480_wakeup(void)
-{
-	u8 interrupt1, device1, device2;
-	u8 usbon,jigusbon,jigusboff;
-	u8 usbstatus;
-
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_CONTROL, 0x1E);
-
-	 mdelay(5);
-
-	 fsa9480_write(&fsa9480_i2c_client, REGISTER_INTERRUPTMASK1, 0xFC);
-
-	 mdelay(5);
-	 
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_INTERRUPT1, &interrupt1);
-
-	 mdelay(5);
-	
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE1, &device1);
-
-	 mdelay(5);
-
-	 fsa9480_read(&fsa9480_i2c_client, REGISTER_DEVICETYPE2, &device2);
-
-	 usbon = 0;
-	 jigusbon = 0;
-	 jigusboff = 0;
-	 usbstatus = 0;
-	 if(interrupt1){
-	 	if(device1 == FSA9480_DEV_TY1_USB)
-			usbon = 1;
-		else if(device2 == FSA9480_DEV_TY2_JIG_USB_ON)
-			jigusbon = 1;
-		else if(device2 == FSA9480_DEV_TY2_JIG_USB_OFF)
-			jigusboff = 1;
-	 	}
-
-	 usbstatus = usbon | jigusbon | jigusboff |MicroJigUSBOnStatus | MicroJigUSBOffStatus;
-
-	 if(!usbstatus){
-		s3c_usb_cable(1);
-		mdelay(5);
-		s3c_usb_cable(0);
-	 	}
-
+	 return 0;
 }
 
 
-static int fsa9480_i2c_resume(struct platform_device *dev)
+static int __devexit fsa9480_remove(struct i2c_client *client)
 {
+	struct fsa9480_state *state = i2c_get_clientdata(client);
+	kfree(state);
 	return 0;
 }
 
 
-static int fsa9480_i2c_attach(struct i2c_adapter *adap)
-{
-    //DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
-	return i2c_probe(adap, &fsa9480_addr_data, fsa9480_codec_probe);
-}
-EXPORT_SYMBOL(fsa9480_i2c_attach);
-
-
-static int fsa9480_i2c_detach(struct i2c_client *client)
-{
-	DEBUG_FSA9480("[FSA9480]%s\n ", __func__);
-	i2c_detach_client(client);
-
-#if 1 //20100630_inchul
-	switch_dev_unregister(&switch_dock_detection);
-#endif
-	return 0;
-}
-
-EXPORT_SYMBOL(fsa9480_i2c_detach);
-
-
-/* corgi i2c codec control layer */
 struct i2c_driver fsa9480_i2c_driver = {
 	.driver = {
-		.name = "fsa9480 I2C Codec",
-		.owner = THIS_MODULE,
+		.owner	= THIS_MODULE,
+		.name	= "fsa9480",
 	},
-	.id =             0,
-	.attach_adapter = fsa9480_i2c_attach,
-	.detach_client =  fsa9480_i2c_detach,
-	.resume =  fsa9480_i2c_resume,
-	.suspend =  fsa9480_i2c_suspend,
-	.command =        NULL,
+	.id_table	= fsa9480_id,
+	.probe	= fsa9480_codec_probe,
+	.remove	= __devexit_p(fsa9480_remove),
+	.command = NULL,
 };
-
-
-static struct i2c_client fsa9480_i2c_client = {
-	.name =   "fsa9480",
-	.driver = &fsa9480_i2c_driver,
-};
-
-#ifdef FEATURE_TOOL_LAUNCHER
-/*
-* Function name: set_tool_launcher_setting_state(int setting_value)
-* Function: Sets tool_launcher_setting_state.
-* Comment: tool_launcher_setting_state is used to see which state TL is in
-*                 without having to read from the parameter memory. (__TOOL_LAUNCHER_STATE)
-* tool_launcher_setting_state values:
-* -1: First time access or need to read from memory once more.
-* 0: disabled.
-* 1: Ready.
-* 2: Done.
-*/
-int set_tool_launcher_setting_state(int setting_value)
-{
-    tool_launcher_setting_state = setting_value;
-}
-/*
-* Function name: int get_tool_launcher_setting_state(int mode)
-* Function: Returns tool_launcher_setting_state.
-* Comment: tool_launcher_setting_state is used to see which state TL is in
-* without having to read from/ write to the parameter memory. (__TOOL_LAUNCHER_STATE)
-* tool_launcher_setting_state values:
-* -1: First time access or need to read from memory once more.
-* 0: disabled.
-* 1: Ready.
-* 2: Done.
-*/
-int get_tool_launcher_setting_state(void)
-{
-    return tool_launcher_setting_state;
-}
-
-/*
-* Function name: int get_tool_launcher_setting(void)
-* Function: return tool launcher state.
-* Comment: 
-* 0: disabled.
-* 1: Ready.
-* 2: Done.
-*/
-int get_tool_launcher_setting(void)
-{
-    int tl_setting = 0;
-    if(get_tool_launcher_setting_state() < 0)
-    {
-        if (sec_get_param_value)
-            sec_get_param_value(__TOOL_LAUNCHER_STATE, &tl_setting);
-        DEBUG_TL("reading tool launcher setting. TL: %d \n", tl_setting);
-        set_tool_launcher_setting_state(tl_setting);
-    }
-    return get_tool_launcher_setting_state();
-}
-
-/*
-* Function name: void set_tool_launcher_setting(int setting_value)
-* Function: set tool launcher state.
-* Comment: 
-* 0: disabled.
-* 1: Ready.
-* 2: Done.
-*/
-void set_tool_launcher_setting(int setting_value)
-{
-    int tl_setting = setting_value;
-    set_tool_launcher_setting_state(-1);
-    if (sec_set_param_value)
-    {
-        DEBUG_TL("setting param value tool launcher state, %d \n", tl_setting);
-        sec_set_param_value(__TOOL_LAUNCHER_STATE, &tl_setting);
-    }
-    return;
-}
-/*
-* Function name: int is_tool_launcher_enabled(void)
-* Function: See if tool launcher is enabled.
-* Comment: 
-* 0: disabled.
-* 1: enabled.
-*/
-int is_tool_launcher_enabled(void)
-{
-    if(get_tool_launcher_setting() > 0)
-        return 1;
-    else
-        return 0;
-}
-#endif
-
 

@@ -20,13 +20,23 @@
 
 #include <linux/mmc/host.h>
 
-#include <plat/regs-sdhci.h>
 #include <plat/sdhci.h>
+#include <plat/regs-sdhci.h>
 
 #include "sdhci.h"
 
 #define MAX_BUS_CLK	(4)
 
+/**
+ * struct sdhci_s3c - S3C SDHCI instance
+ * @host: The SDHCI host created
+ * @pdev: The platform device we where created from.
+ * @ioarea: The resource created when we claimed the IO area.
+ * @pdata: The platform data for this controller.
+ * @cur_clk: The index of the current bus clock.
+ * @clk_io: The clock for the internal bus interface.
+ * @clk_bus: The clocks that are available for the SD/MMC bus clock.
+ */
 struct sdhci_s3c {
 	struct sdhci_host	*host;
 	struct platform_device	*pdev;
@@ -34,7 +44,7 @@ struct sdhci_s3c {
 	struct s3c_sdhci_platdata *pdata;
 	unsigned int		cur_clk;
 
-	struct clk		*clk_io;	/* clock for io bus */
+	struct clk		*clk_io;
 	struct clk		*clk_bus[MAX_BUS_CLK];
 };
 
@@ -43,6 +53,10 @@ static inline struct sdhci_s3c *to_s3c(struct sdhci_host *host)
 	return sdhci_priv(host);
 }
 
+/**
+ * get_curclk - convert ctrl2 register to clock source number
+ * @ctrl2: Control2 register value.
+ */
 static u32 get_curclk(u32 ctrl2)
 {
 	ctrl2 &= S3C_SDHCI_CTRL2_SELBASECLK_MASK;
@@ -65,6 +79,12 @@ static void sdhci_s3c_check_sclk(struct sdhci_host *host)
 	}
 }
 
+/**
+ * sdhci_s3c_get_max_clk - callback to get maximum clock frequency.
+ * @host: The SDHCI host instance.
+ *
+ * Callback to return the maximum clock rate acheivable by the controller.
+*/
 static unsigned int sdhci_s3c_get_max_clk(struct sdhci_host *host)
 {
 	struct sdhci_s3c *ourhost = to_s3c(host);
@@ -91,11 +111,7 @@ static unsigned int sdhci_s3c_get_max_clk(struct sdhci_host *host)
 
 static unsigned int sdhci_s3c_get_timeout_clk(struct sdhci_host *host)
 {
-#if defined (CONFIG_CPU_S5PC100)
-        return sdhci_s3c_get_max_clk(host) / 4000000;
-#else
-        return sdhci_s3c_get_max_clk(host) / 1000000;
-#endif
+	return sdhci_s3c_get_max_clk(host) / 1000000;
 }
 
 static void sdhci_s3c_set_ios(struct sdhci_host *host,
@@ -104,11 +120,18 @@ static void sdhci_s3c_set_ios(struct sdhci_host *host,
 	struct sdhci_s3c *ourhost = to_s3c(host);
 	struct s3c_sdhci_platdata *pdata = ourhost->pdata;
 	int width;
+	u8 tmp;
 
 	sdhci_s3c_check_sclk(host);
 
 	if (ios->power_mode != MMC_POWER_OFF) {
 		switch (ios->bus_width) {
+		case MMC_BUS_WIDTH_8:
+			width = 8;
+			tmp = readb(host->ioaddr + SDHCI_HOST_CONTROL);
+			writeb(tmp | SDHCI_S3C_CTRL_8BITBUS,
+				host->ioaddr + SDHCI_HOST_CONTROL);
+			break;
 		case MMC_BUS_WIDTH_4:
 			width = 4;
 			break;
@@ -131,6 +154,12 @@ static void sdhci_s3c_set_ios(struct sdhci_host *host,
 	}
 }
 
+/**
+ * sdhci_s3c_consider_clock - consider one the bus clocks for current setting
+ * @ourhost: Our SDHCI instance.
+ * @src: The source clock index.
+ * @wanted: The clock frequency wanted.
+ */
 static unsigned int sdhci_s3c_consider_clock(struct sdhci_s3c *ourhost,
 					     unsigned int src,
 					     unsigned int wanted)
@@ -155,7 +184,15 @@ static unsigned int sdhci_s3c_consider_clock(struct sdhci_s3c *ourhost,
 	return (wanted - (rate / div));
 }
 
-static void sdhci_s3c_change_clock(struct sdhci_host *host, unsigned int clock)
+/**
+ * sdhci_s3c_set_clock - callback on clock change
+ * @host: The SDHCI host being changed
+ * @clock: The clock rate being requested.
+ *
+ * When the card's clock is going to be changed, look at the new frequency
+ * and find the best clock source to go with it.
+*/
+static void sdhci_s3c_set_clock(struct sdhci_host *host, unsigned int clock)
 {
 	struct sdhci_s3c *ourhost = to_s3c(host);
 	unsigned int best = UINT_MAX;
@@ -163,6 +200,10 @@ static void sdhci_s3c_change_clock(struct sdhci_host *host, unsigned int clock)
 	int best_src = 0;
 	int src;
 	u32 ctrl;
+
+	/* don't bother if the clock is going off. */
+	if (clock == 0)
+		return;
 
 	for (src = 0; src < MAX_BUS_CLK; src++) {
 		delta = sdhci_s3c_consider_clock(ourhost, src, clock);
@@ -176,25 +217,37 @@ static void sdhci_s3c_change_clock(struct sdhci_host *host, unsigned int clock)
 		"selected source %d, clock %d, delta %d\n",
 		 best_src, clock, best);
 
-	/* turn clock off to card before changing clock source */
-	writew(0, host->ioaddr + SDHCI_CLOCK_CONTROL);
-
 	/* select the new clock source */
 
 	if (ourhost->cur_clk != best_src) {
 		struct clk *clk = ourhost->clk_bus[best_src];
 
+		/* turn clock off to card before changing clock source */
+		writew(0, host->ioaddr + SDHCI_CLOCK_CONTROL);
+
 		ourhost->cur_clk = best_src;
 		host->max_clk = clk_get_rate(clk);
-		host->timeout_clk = host->max_clk / 1000;
+		host->timeout_clk = sdhci_s3c_get_timeout_clk(host);
 
 		ctrl = readl(host->ioaddr + S3C_SDHCI_CONTROL2);
 		ctrl &= ~S3C_SDHCI_CTRL2_SELBASECLK_MASK;
 		ctrl |= best_src << S3C_SDHCI_CTRL2_SELBASECLK_SHIFT;
 		writel(ctrl, host->ioaddr + S3C_SDHCI_CONTROL2);
 	}
+}
 
-	sdhci_change_clock(host, clock);
+static int sdhci_s3c_get_ro(struct mmc_host *mmc)
+{
+	struct sdhci_host *host;
+	struct sdhci_s3c *sc;
+
+	host = mmc_priv(mmc);
+	sc = sdhci_priv(host);
+
+	if(sc->pdata->get_ro)
+		return sc->pdata->get_ro(mmc);
+
+	return 0;
 }
 
 static int sdhci_s3c_get_cd(struct sdhci_host *host)
@@ -217,11 +270,10 @@ static int sdhci_s3c_adjust_cfg(struct sdhci_host *host, int rw)
 		pdata->adjust_cfg_card(pdata, host->ioaddr, rw);
 }
 
-
 static struct sdhci_ops sdhci_s3c_ops = {
 	.get_max_clock		= sdhci_s3c_get_max_clk,
 	.get_timeout_clock	= sdhci_s3c_get_timeout_clk,
-	.change_clock		= sdhci_s3c_change_clock,
+	.set_clock		= sdhci_s3c_set_clock,
 	.set_ios		= sdhci_s3c_set_ios,
 	.get_cd			= sdhci_s3c_get_cd,
 	.adjust_cfg		= sdhci_s3c_adjust_cfg,
@@ -233,15 +285,14 @@ static struct sdhci_ops sdhci_s3c_ops = {
  */
 void sdhci_s3c_force_presence_change(struct platform_device *pdev)
 {
-       struct s3c_sdhci_platdata *pdata = pdev->dev.platform_data;
+	struct sdhci_host *host = platform_get_drvdata(pdev);
 
-	   printk(KERN_DEBUG "%s : Enter\n",__FUNCTION__);
-       mmc_detect_change(pdata->sdhci_host->mmc, msecs_to_jiffies(200));
+	printk(KERN_DEBUG "%s : Enter\n",__FUNCTION__);
+	mmc_detect_change(host->mmc, msecs_to_jiffies(200));
 }
 EXPORT_SYMBOL_GPL(sdhci_s3c_force_presence_change);
 
-
-irqreturn_t sdhci_irq_cd (int irq, void *dev_id)
+irqreturn_t sdhci_irq_cd(int irq, void *dev_id)
 {
 	struct sdhci_s3c* sc = dev_id;
 
@@ -293,15 +344,13 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 		return PTR_ERR(host);
 	}
 
-	pdata->sdhci_host = host;
-
 	sc = sdhci_priv(host);
-
-    platform_set_drvdata(pdev, host);
 
 	sc->host = host;
 	sc->pdev = pdev;
 	sc->pdata = pdata;
+
+	platform_set_drvdata(pdev, host);
 
 	sc->clk_io = clk_get(dev, "hsmmc");
 	if (IS_ERR(sc->clk_io)) {
@@ -357,9 +406,10 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 
 	/* Ensure we have minimal gpio selected CMD/CLK/Detect */
 	if (pdata->cfg_gpio)
-		pdata->cfg_gpio(pdev, 0);
+		pdata->cfg_gpio(pdev, pdata->max_width);
 
-	sdhci_s3c_check_sclk(host);
+	if (pdata->get_ro)
+		sdhci_s3c_ops.get_ro = sdhci_s3c_get_ro;
 
 	host->hw_name = "samsung-hsmmc";
 	host->ops = &sdhci_s3c_ops;
@@ -367,14 +417,25 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 	host->irq = irq;
 
 	/* Setup quirks for the controller */
+	host->quirks |= SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC;
+	host->quirks |= SDHCI_QUIRK_BROKEN_CARD_PRESENT_BIT;
 	host->quirks |= SDHCI_QUIRK_BROKEN_TIMEOUT_VAL;
-	
-	host->flags = SDHCI_USE_DMA;
+
+#ifndef CONFIG_MMC_SDHCI_S3C_DMA
+
+	/* we currently see overruns on errors, so disable the SDMA
+	 * support as well. */
+	host->quirks |= SDHCI_QUIRK_BROKEN_DMA;
+
+	/* PIO currently has problems with multi-block IO */
+	host->quirks |= SDHCI_QUIRK_NO_MULTIBLOCK;
+
+#endif /* CONFIG_MMC_SDHCI_S3C_DMA */
 
 	/* It seems we do not get an DATA transfer complete on non-busy
 	 * transfers, not sure if this is a problem with this specific
 	 * SDHCI block, or a missing configuration that needs to be set. */
-	host->quirks |= SDHCI_QUIRK_NO_TCIRQ_ON_NOT_BUSY;
+	host->quirks |= SDHCI_QUIRK_NO_BUSY_IRQ;
 
 	host->quirks |= (SDHCI_QUIRK_32BIT_DMA_ADDR |
 			 SDHCI_QUIRK_32BIT_DMA_SIZE);
@@ -389,9 +450,14 @@ static int __devinit sdhci_s3c_probe(struct platform_device *pdev)
 	/* to add external irq as a card detect signal */
 	if (pdata->cfg_ext_cd) {
 		pdata->cfg_ext_cd();
+
 		if (pdata->detect_ext_cd())
 			host->flags |= SDHCI_DEVICE_ALIVE;
 	}
+
+	/* to configure gpio pin as a card write protection signal */
+	if (pdata->cfg_wp)
+		pdata->cfg_wp();
 
 	ret = sdhci_add_host(host);
 	if (ret) {
@@ -515,8 +581,8 @@ static int sdhci_s3c_resume(struct platform_device *dev)
 static struct platform_driver sdhci_s3c_driver = {
 	.probe		= sdhci_s3c_probe,
 	.remove		= __devexit_p(sdhci_s3c_remove),
-        .suspend        = sdhci_s3c_suspend,
-        .resume         = sdhci_s3c_resume,
+	.suspend	= sdhci_s3c_suspend,
+	.resume		= sdhci_s3c_resume,
 	.shutdown	= sdhci_s3c_shutdown,
 	.driver		= {
 		.owner	= THIS_MODULE,

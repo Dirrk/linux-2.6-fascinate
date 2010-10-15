@@ -27,8 +27,8 @@
 #define GAHBCFG_INIT	(PTXFE_HALF|NPTXFE_HALF|MODE_DMA|BURST_INCR4|GBL_INT_UNMASK)
 
 static u8 clear_feature_num;
-static int clear_feature_flag = 0;
-static int set_conf_done = 0;
+static int clear_feature_flag;
+static int set_conf_done;
 
 /* Bulk-Only Mass Storage Reset (class-specific request) */
 #define GET_MAX_LUN_REQUEST	0xFE
@@ -38,13 +38,13 @@ static int set_conf_done = 0;
 #define TEST_SELECTOR_MASK	0xFF
 #define TEST_PKT_SIZE		53
 
-static u8 test_pkt[TEST_PKT_SIZE] = {
-	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,				//JKJKJKJK x 9
-	0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,				//JJKKJJKK x 8
-	0xEE,0xEE,0xEE,0xEE,0xEE,0xEE,0xEE,0xEE,				//JJJJKKKK x 8
-	0xFE,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,		//JJJJJJJKKKKKKK x8 - '1'
-	0x7F,0xBF,0xDF,0xEF,0xF7,0xFB,0xFD,					//'1' + JJJJJJJK x 8
-	0xFC,0x7E,0xBF,0xDF,0xEF,0xF7,0xFB,0xFD,0x7E				//{JKKKKKKK x 10},JK
+static u8 test_pkt[TEST_PKT_SIZE] __attribute__((aligned(8))) = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,				/* JKJKJKJK x 9 */
+	0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,					/* JJKKJJKK x 8 */
+	0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE,					/* JJJJKKKK x 8 */
+	0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,		/* JJJJJJJKKKKKKK x 8 - '1' */
+	0x7F, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD,					/* '1' + JJJJJJJK x 8 */
+	0xFC, 0x7E, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD, 0x7E				/* {JKKKKKKK x 10}, JK */
 };
 
 void s3c_udc_ep_set_stall(struct s3c_ep *ep);
@@ -52,21 +52,23 @@ void s3c_udc_ep_set_stall(struct s3c_ep *ep);
 static inline void s3c_udc_ep0_zlp(void)
 {
 	u32 ep_ctrl;
-	
+
 	writel(virt_to_phys(&usb_ctrl), S3C_UDC_OTG_DIEPDMA(EP0_CON));
 	writel((1<<19| 0<<0), S3C_UDC_OTG_DIEPTSIZ(EP0_CON));
 
 	ep_ctrl = readl(S3C_UDC_OTG_DIEPCTL(EP0_CON));
 	writel(ep_ctrl|DEPCTL_EPENA|DEPCTL_CNAK, S3C_UDC_OTG_DIEPCTL(EP0_CON));
 
-	DEBUG_EP0("%s:EP0 ZLP DIEPCTL0 = 0x%x\n",
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::s3c_udc_ep0_zlp\n");
+		DEBUG_EP0("%s:EP0 ZLP DIEPCTL0 = 0x%x\n",
 		__func__, readl(S3C_UDC_OTG_DIEPCTL(EP0_CON)));
 }
 
 static inline void s3c_udc_pre_setup(void)
 {
 	u32 ep_ctrl;
-
+	
 	DEBUG_IN_EP("%s : Prepare Setup packets.\n", __func__);
 
 	writel((1 << 19)|sizeof(struct usb_ctrlrequest), S3C_UDC_OTG_DOEPTSIZ(EP0_CON));
@@ -127,11 +129,11 @@ static int setdma_tx(struct s3c_ep *ep, struct s3c_request *req)
 	req->req.actual += length;
 	dma_cache_maint(buf, length, DMA_TO_DEVICE);
 
-	if(length == 0) {
+	if (length == 0)
 		pktcnt = 1;
-	} else {
+	else
 		pktcnt = (length - 1)/(ep->ep.maxpacket) + 1;
-	}
+	
 
 	/* Flush the endpoint's Tx FIFO */
         writel(ep_num<<6, S3C_UDC_OTG_GRSTCTL);
@@ -140,8 +142,8 @@ static int setdma_tx(struct s3c_ep *ep, struct s3c_request *req)
 
 	/* Write the FIFO number to be used for this endpoint */
 	ctrl = readl(S3C_UDC_OTG_DIEPCTL(ep_num));
-	ctrl &= ~(0xF << 22);
-	ctrl |= (ep_num << 22);
+	ctrl &= ~DEPCTL_TXFNUM_MASK;;
+	ctrl |= (ep_num << DEPCTL_TXFNUM_BIT);
 	writel(ctrl , S3C_UDC_OTG_DIEPCTL(ep_num));
 
 	writel(virt_to_phys(buf), S3C_UDC_OTG_DIEPDMA(ep_num));
@@ -181,13 +183,12 @@ static void complete_rx(struct s3c_udc *dev, u8 ep_num)
 
 	ep_tsr = readl(S3C_UDC_OTG_DOEPTSIZ(ep_num));
 
-	if(ep_num == EP0_CON) {
+	if (ep_num == EP0_CON)
 		xfer_size = (ep_tsr & 0x7f);
 
-	} else {
+	else
 		xfer_size = (ep_tsr & 0x7fff);
-	}
-
+	
 	dma_cache_maint(req->req.buf, req->req.length, DMA_FROM_DEVICE);
 	xfer_length = req->req.length - xfer_size;
 	req->req.actual += min(xfer_length, req->req.length - req->req.actual);
@@ -238,21 +239,18 @@ static void complete_tx(struct s3c_udc *dev, u8 ep_num)
 
 		last = write_fifo_ep0(ep, req);
 
-		if(last) {
+		if (last)
 			dev->ep0state = WAIT_FOR_SETUP;
-		}
 
 		return;
 	}
 
 	ep_tsr = readl(S3C_UDC_OTG_DIEPTSIZ(ep_num));
 
-	if(ep_num == EP0_CON) {
+	if (ep_num == EP0_CON)
 		xfer_size = (ep_tsr & 0x7f);
-
-	} else {
+	else
 		xfer_size = (ep_tsr & 0x7fff);
-	}
 
 	req->req.actual = req->req.length - xfer_size;
 	xfer_length = req->req.length - xfer_size;
@@ -321,9 +319,8 @@ static void process_ep_in_intr(struct s3c_udc *dev)
 				complete_tx(dev, ep_num);
 
 				if (ep_num == 0) {
-					if(dev->ep0state == WAIT_FOR_SETUP) {
+					if (dev->ep0state == WAIT_FOR_SETUP)
 						s3c_udc_pre_setup();
-					}
 
 					/* continue transfer after set_clear_halt for DMA mode */
 					if (clear_feature_flag == 1) {
@@ -371,9 +368,8 @@ static void process_ep_out_intr(struct s3c_udc * dev)
 				}
 
 			} else {
-				if (ep_intr_status & TRANSFER_DONE) {
+				if (ep_intr_status & TRANSFER_DONE)
 					complete_rx(dev, ep_num);
-				}
 			}
 		}
 		ep_num++;
@@ -434,11 +430,21 @@ static irqreturn_t s3c_udc_irq(int irq, void *_dev)
 		if (dev->gadget.speed != USB_SPEED_UNKNOWN
 		    && dev->driver
 		    && dev->driver->suspend) {
-
+			spin_unlock(&dev->lock);
 			dev->driver->suspend(&dev->gadget);
+			spin_lock(&dev->lock);
+			}
+		if(dev->status & (1 << USB_DEVICE_REMOTE_WAKEUP)) {
+			DEBUG_ISR("device is under remote wakeup\n");
+			spin_unlock_irqrestore(&dev->lock,flags);
+			return IRQ_HANDLED;
+			}
+		/*fix ch9 test - suspend / resume  */
+		  if(dev->driver) { 
+			spin_unlock(&dev->lock);
+			dev->driver->disconnect(&dev->gadget);
+			spin_lock(&dev->lock);
 		}
-		  stop_activity(dev,dev->driver); //shaju
-
 	}
 
 	if (intr_status & INT_RESUME) {
@@ -463,6 +469,7 @@ static irqreturn_t s3c_udc_irq(int irq, void *_dev)
 		if((usb_status & 0xc0000) == (0x3 << 18)) {
 			if(reset_available) {
 				DEBUG_ISR("\t\tOTG core got reset (%d)!! \n", reset_available);
+				printk("PKD:: OTG core got reset!!! \n");
 				stop_activity(dev, dev->driver);
 				reconfig_usbd();
 				dev->ep0state = WAIT_FOR_SETUP;
@@ -476,17 +483,16 @@ static irqreturn_t s3c_udc_irq(int irq, void *_dev)
 		}
 	}
 
-	if (intr_status & INT_IN_EP) {
+	if (intr_status & INT_IN_EP)
 		process_ep_in_intr(dev);
-	}
 
-	if(intr_status & INT_OUT_EP) {
+	if (intr_status & INT_OUT_EP)
 		process_ep_out_intr(dev);
-	}
 
 	spin_unlock_irqrestore(&dev->lock, flags);
 
 	return IRQ_HANDLED;
+
 }
 
 /** Queue one request
@@ -568,9 +574,8 @@ static int s3c_queue(struct usb_ep *_ep, struct usb_request *_req,
 	}
 
 	/* pio or dma irq handler advances the queue. */
-	if (likely(req != 0)) {
+	if (likely(req != 0))
 		list_add_tail(&req->queue, &ep->queue);
-	}
 
 	spin_unlock_irqrestore(&dev->lock, flags);
 
@@ -590,7 +595,9 @@ static int write_fifo_ep0(struct s3c_ep *ep, struct s3c_request *req)
 
 	max = ep_maxpacket(ep);
 
-	DEBUG_EP0("%s: max = %d\n", __func__, max);
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::write_fifo_ep0\n");
+		DEBUG_EP0("%s: max = %d\n", __func__, max);
 
 	count = setdma_tx(ep, req);
 
@@ -604,7 +611,9 @@ static int write_fifo_ep0(struct s3c_ep *ep, struct s3c_request *req)
 			is_last = 1;
 	}
 
-	DEBUG_EP0("%s: wrote %s %d bytes%s %d left %p\n", __func__,
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::write_fifo_ep0\n");	
+		DEBUG_EP0("%s: wrote %s %d bytes%s %d left %p\n", __func__,
 		  ep->ep.name, count,
 		  is_last ? "/L" : "", req->req.length - req->req.actual, req);
 
@@ -628,7 +637,9 @@ static __inline__ int s3c_fifo_read(struct s3c_ep *ep, u32 *cp, int max)
 
 	bytes = sizeof(struct usb_ctrlrequest);
 	dma_cache_maint(&usb_ctrl, bytes, DMA_FROM_DEVICE);
-	DEBUG_EP0("%s: bytes=%d, ep_index=%d \n", __func__, bytes, ep_index(ep));
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::s3c_fifo_read\n");
+		DEBUG_EP0("%s: bytes=%d, ep_index=%d \n", __func__, bytes, ep_index(ep));
 
 	return bytes;
 }
@@ -647,8 +658,9 @@ static void udc_set_address(struct s3c_udc *dev, unsigned char address)
 
 	s3c_udc_ep0_zlp();
 
-	DEBUG_EP0("%s: USB OTG 2.0 Device address=%d, DCFG=0x%x\n",
-		__func__, address, readl(S3C_UDC_OTG_DCFG));
+	if (currentusbstatus == USBSTATUS_VTP)
+		DEBUG_EP0("%s: USB OTG 2.0 Device address=%d, DCFG=0x%x\n",
+	__func__, address, readl(S3C_UDC_OTG_DCFG));
 
 	dev->usb_address = address;
 }
@@ -662,14 +674,15 @@ static inline void s3c_udc_ep0_set_stall(struct s3c_ep *ep)
 	ep_ctrl = readl(S3C_UDC_OTG_DIEPCTL(EP0_CON));
 
 	/* set the disable and stall bits */
-	if (ep_ctrl & DEPCTL_EPENA) {
+	if (ep_ctrl & DEPCTL_EPENA)
 		ep_ctrl |= DEPCTL_EPDIS;
-	}
+
 	ep_ctrl |= DEPCTL_STALL;
 
 	writel(ep_ctrl, S3C_UDC_OTG_DIEPCTL(EP0_CON));
 
-	DEBUG_EP0("%s: set ep%d stall, DIEPCTL0 = 0x%x\n",
+	if (currentusbstatus == USBSTATUS_VTP)
+		DEBUG_EP0("%s: set ep%d stall, DIEPCTL0 = 0x%x\n",
 		__func__, ep_index(ep), readl(S3C_UDC_OTG_DIEPCTL(EP0_CON)));
 	/* 
 	 * The application can only set this bit, and the core clears it,
@@ -695,7 +708,9 @@ static void s3c_ep0_read(struct s3c_udc *dev)
 		return;
 	}
 
-	DEBUG_EP0("%s: req = %p, req.length = 0x%x, req.actual = 0x%x\n",
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::s3c_ep0_read\n");
+		DEBUG_EP0("%s: req = %p, req.length = 0x%x, req.actual = 0x%x\n",
 		__func__, req, req->req.length, req->req.actual);
 
 	if(req->req.length == 0) {
@@ -706,7 +721,7 @@ static void s3c_ep0_read(struct s3c_udc *dev)
 		set_conf_done = 1;
 		s3c_udc_ep0_zlp();
 		done(ep, req, 0);
-
+	if (currentusbstatus == USBSTATUS_VTP)
 		DEBUG_EP0("%s: req.length = 0, bRequest = %d\n", __func__, usb_ctrl.bRequest);
 		return;
 	}
@@ -723,19 +738,20 @@ static int s3c_ep0_write(struct s3c_udc *dev)
 	struct s3c_ep *ep = &dev->ep[0];
 	int ret, need_zlp = 0;
 
-	if (list_empty(&ep->queue)) {
+	if (list_empty(&ep->queue))
 		req = 0;
-
-	} else {
+	else
 		req = list_entry(ep->queue.next, struct s3c_request, queue);
-	}
 
 	if (!req) {
-		DEBUG_EP0("%s: NULL REQ\n", __func__);
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_EP0("%s: NULL REQ\n", __func__);
 		return 0;
 	}
 
-	DEBUG_EP0("%s: req = %p, req.length = 0x%x, req.actual = 0x%x\n",
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::s3c_ep0_write\n");		
+		DEBUG_EP0("%s: req = %p, req.length = 0x%x, req.actual = 0x%x\n",
 		__func__, req, req->req.length, req->req.actual);
 
 	if (req->req.length - req->req.actual == ep0_fifo_size) {
@@ -749,50 +765,59 @@ static int s3c_ep0_write(struct s3c_udc *dev)
 	if ((ret == 1) && !need_zlp) {
 		/* Last packet */
 		dev->ep0state = WAIT_FOR_SETUP;
-		DEBUG_EP0("%s: finished, waiting for status\n", __func__);
-
+		if (currentusbstatus == USBSTATUS_VTP)
+			printk("TETHERING::finished, waiting for status\n");		
+			DEBUG_EP0("%s: finished, waiting for status\n", __func__);
 	} else {
 		dev->ep0state = DATA_STATE_XMIT;
-		DEBUG_EP0("%s: not finished\n", __func__);
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_EP0("%s: not finished\n", __func__);
 	}
 
 	if (need_zlp) {
 		dev->ep0state = DATA_STATE_NEED_ZLP;
-		DEBUG_EP0("%s: Need ZLP!\n", __func__);
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_EP0("%s: Need ZLP!\n", __func__);
 	}
 
 	return 1;
 }
 
-u16	g_status;
+u16     g_status __attribute__((aligned(8)));
 
 static int s3c_udc_get_status(struct s3c_udc *dev,
 		struct usb_ctrlrequest *crq)
 {
 	u8 ep_num = crq->wIndex & 0x7F;
 	u32 ep_ctrl;
-
-	DEBUG_SETUP("%s: *** USB_REQ_GET_STATUS  \n",__func__);
+	if (currentusbstatus == USBSTATUS_VTP)
+		DEBUG_SETUP("%s: *** USB_REQ_GET_STATUS  \n",__func__);
 
 	switch (crq->bRequestType & USB_RECIP_MASK) {
 	case USB_RECIP_INTERFACE:
 		g_status = 0;
+	if (currentusbstatus == USBSTATUS_VTP)
 		DEBUG_SETUP("\tGET_STATUS: USB_RECIP_INTERFACE, g_stauts = %d\n", g_status);
 		break;
 
 	case USB_RECIP_DEVICE:
-		g_status = 0x1; /* Self powered */
+		/* update device status */
+		g_status = dev->status; 
+	if (currentusbstatus == USBSTATUS_VTP)
 		DEBUG_SETUP("\tGET_STATUS: USB_RECIP_DEVICE, g_stauts = %d\n", g_status);
 		break;
 
 	case USB_RECIP_ENDPOINT:
-		if (ep_num > 4 || crq->wLength > 2) {
+		/* fix ch9 halt endpoint test*/
+		if (crq->wLength > 2) {
+		if (currentusbstatus == USBSTATUS_VTP)
 			DEBUG_SETUP("\tGET_STATUS: Not support EP or wLength\n");
 			return 1;
 		}
 
 		g_status = dev->ep[ep_num].stopped;
-		DEBUG_SETUP("\tGET_STATUS: USB_RECIP_ENDPOINT, g_stauts = %d\n", g_status);
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("\tGET_STATUS: USB_RECIP_ENDPOINT, g_stauts = %d\n", g_status);
 
 		break;
 
@@ -824,9 +849,9 @@ void s3c_udc_ep_set_stall(struct s3c_ep *ep)
 		ep_ctrl = readl(S3C_UDC_OTG_DIEPCTL(ep_num));
 	
 		/* set the disable and stall bits */
-		if (ep_ctrl & DEPCTL_EPENA) {
+		if (ep_ctrl & DEPCTL_EPENA)
 			ep_ctrl |= DEPCTL_EPDIS;
-		}
+
 		ep_ctrl |= DEPCTL_STALL;
 
 		writel(ep_ctrl, S3C_UDC_OTG_DIEPCTL(ep_num));
@@ -838,7 +863,6 @@ void s3c_udc_ep_set_stall(struct s3c_ep *ep)
 
 		/* set the stall bit */
 		ep_ctrl |= DEPCTL_STALL;
-		ep_ctrl = readl(S3C_UDC_OTG_DIEPCTL(ep_num));
 
 		writel(ep_ctrl, S3C_UDC_OTG_DOEPCTL(ep_num));
 		DEBUG("%s: set stall, DOEPCTL%d = 0x%x\n",
@@ -991,15 +1015,19 @@ static int s3c_udc_clear_feature(struct usb_ep *_ep)
 {
 	struct s3c_ep	*ep;
 	u8		ep_num;
-
+	struct s3c_udc *dev = the_controller;
 	ep = container_of(_ep, struct s3c_ep, ep);
 	ep_num = ep_index(ep);
 
-	DEBUG_SETUP("%s: ep_num = %d, is_in = %d, clear_feature_flag = %d\n",
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::s3c_udc_clear_feature\n");
+		DEBUG_SETUP("%s: ep_num = %d, is_in = %d, clear_feature_flag = %d\n",
 		__func__, ep_num, ep_is_in(ep), clear_feature_flag);
 
 	if (usb_ctrl.wLength != 0) {
-		DEBUG_SETUP("\tCLEAR_FEATURE: wLength is not zero.....\n");
+		if (currentusbstatus == USBSTATUS_VTP)
+			printk("TETHERING::s3c_udc_clear_feature\n");
+			DEBUG_SETUP("\tCLEAR_FEATURE: wLength is not zero.....\n");
 		return 1;
 	}
 
@@ -1007,11 +1035,14 @@ static int s3c_udc_clear_feature(struct usb_ep *_ep)
 	case USB_RECIP_DEVICE:
 		switch (usb_ctrl.wValue) {
 		case USB_DEVICE_REMOTE_WAKEUP:
+			if (currentusbstatus == USBSTATUS_VTP)
 			DEBUG_SETUP("\tCLEAR_FEATURE: USB_DEVICE_REMOTE_WAKEUP\n");
+			printk("%s:: USB_DEVICE_REMOTE_WAKEUP\n",__func__);
+			dev->status &= ~(1 << USB_DEVICE_REMOTE_WAKEUP);
 			break;
 
 		case USB_DEVICE_TEST_MODE:
-			DEBUG_SETUP("\tCLEAR_FEATURE: USB_DEVICE_TEST_MODE\n");
+			//DEBUG_SETUP("\tCLEAR_FEATURE: USB_DEVICE_TEST_MODE\n");
 			/** @todo Add CLEAR_FEATURE for TEST modes. */
 			break;
 		}
@@ -1020,7 +1051,8 @@ static int s3c_udc_clear_feature(struct usb_ep *_ep)
 		break;
 
 	case USB_RECIP_ENDPOINT:
-		DEBUG_SETUP("\tCLEAR_FEATURE: USB_RECIP_ENDPOINT, wValue = %d\n",
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("\tCLEAR_FEATURE: USB_RECIP_ENDPOINT, wValue = %d\n",
 				usb_ctrl.wValue);
 
 		if (usb_ctrl.wValue == USB_ENDPOINT_HALT) {
@@ -1050,8 +1082,7 @@ static inline void set_test_mode(void)
 	u32 ep_ctrl, dctl;
 	u8 test_selector = (usb_ctrl.wIndex>>8) & TEST_SELECTOR_MASK;
 
-	if(test_selector>0 && test_selector<6)
-	{
+	if(test_selector>0 && test_selector<6) {
 		ep_ctrl = readl(S3C_UDC_OTG_DIEPCTL(EP0_CON));
 
 		writel(1<<19| 0<<0, S3C_UDC_OTG_DIEPTSIZ(EP0_CON));
@@ -1109,14 +1140,15 @@ static int s3c_udc_set_feature(struct usb_ep *_ep)
 {
 	struct s3c_ep	*ep;
 	u8		ep_num;
-
+	struct s3c_udc *dev = the_controller;
 	ep = container_of(_ep, struct s3c_ep, ep);
 	ep_num = ep_index(ep);
 
-	DEBUG_SETUP("%s: *** USB_REQ_SET_FEATURE , ep_num = %d\n",__func__, ep_num);
+	if (currentusbstatus == USBSTATUS_VTP)
+		DEBUG_SETUP("%s: *** USB_REQ_SET_FEATURE , ep_num = %d\n",__func__, ep_num);
 
 	if (usb_ctrl.wLength != 0) {
-		DEBUG_SETUP("\tSET_FEATURE: wLength is not zero.....\n");
+		//DEBUG_SETUP("\tSET_FEATURE: wLength is not zero.....\n");
 		return 1;
 	}
 
@@ -1124,26 +1156,29 @@ static int s3c_udc_set_feature(struct usb_ep *_ep)
 	case USB_RECIP_DEVICE:
 		switch (usb_ctrl.wValue) {
 		case USB_DEVICE_REMOTE_WAKEUP:
-			DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_REMOTE_WAKEUP\n");
+			if (currentusbstatus == USBSTATUS_VTP)
+				DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_REMOTE_WAKEUP\n");
+			printk("%s:: USB_DEVICE_REMOTE_WAKEUP\n",__func__);
+			dev->status |= (1 << USB_DEVICE_REMOTE_WAKEUP);
 			break;
 
 		case USB_DEVICE_TEST_MODE:
-			DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_TEST_MODE\n");
+			//DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_TEST_MODE\n");
 			set_test_mode();
 			break;
 
 		case USB_DEVICE_B_HNP_ENABLE:
-			DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_B_HNP_ENABLE\n");
+			//DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_B_HNP_ENABLE\n");
 			break;
 
 		case USB_DEVICE_A_HNP_SUPPORT:
 			/* RH port supports HNP */
-			DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_A_HNP_SUPPORT\n");
+			//DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_A_HNP_SUPPORT\n");
 			break;
 
 		case USB_DEVICE_A_ALT_HNP_SUPPORT:
 			/* other RH port does */
-			DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_A_ALT_HNP_SUPPORT\n");
+			//DEBUG_SETUP("\tSET_FEATURE: USB_DEVICE_A_ALT_HNP_SUPPORT\n");
 			break;
 		}
 
@@ -1151,11 +1186,13 @@ static int s3c_udc_set_feature(struct usb_ep *_ep)
 		return 0;
 
 	case USB_RECIP_INTERFACE:
-		DEBUG_SETUP("\tSET_FEATURE: USB_RECIP_INTERFACE\n");
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("\tSET_FEATURE: USB_RECIP_INTERFACE\n");
 		break;
 
 	case USB_RECIP_ENDPOINT:
-		DEBUG_SETUP("\tSET_FEATURE: USB_RECIP_ENDPOINT\n");
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("\tSET_FEATURE: USB_RECIP_ENDPOINT\n");
 		if (usb_ctrl.wValue == USB_ENDPOINT_HALT) {
 			if (ep_num == 0) {
 				s3c_udc_ep0_set_stall(ep);
@@ -1187,24 +1224,27 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 	/* read control req from fifo (8 bytes) */
 	bytes = s3c_fifo_read(ep, (u32 *)&usb_ctrl, 8);
 
-	DEBUG_SETUP("%s: bRequestType = 0x%x(%s), bRequest = 0x%x"
+	if (currentusbstatus == USBSTATUS_VTP)
+		printk("TETHERING::s3c_ep0_setup\n");
+		DEBUG_SETUP("%s: bRequestType = 0x%x(%s), bRequest = 0x%x"
 			"\twLength = 0x%x, wValue = 0x%x, wIndex= 0x%x\n",
 			__func__, usb_ctrl.bRequestType,
 			(usb_ctrl.bRequestType & USB_DIR_IN) ? "IN" : "OUT", usb_ctrl.bRequest,
 			usb_ctrl.wLength, usb_ctrl.wValue, usb_ctrl.wIndex);
 
 	if (usb_ctrl.bRequest == GET_MAX_LUN_REQUEST && usb_ctrl.wLength != 1) {
-		DEBUG_SETUP("\t%s:GET_MAX_LUN_REQUEST:invalid wLength = %d, setup returned\n",
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("\t%s:GET_MAX_LUN_REQUEST:invalid wLength = %d, setup returned\n",
 			__func__, usb_ctrl.wLength);
 
 		s3c_udc_ep0_set_stall(ep);
 		dev->ep0state = WAIT_FOR_SETUP;
 
 		return;
-	}
-	else if (usb_ctrl.bRequest == BOT_RESET_REQUEST && usb_ctrl.wLength != 0) {
+	} else if (usb_ctrl.bRequest == BOT_RESET_REQUEST && usb_ctrl.wLength != 0) {
 		/* Bulk-Only *mass storge reset of class-specific request */ 
-		DEBUG_SETUP("\t%s:BOT Rest:invalid wLength = %d, setup returned\n",
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("\t%s:BOT Rest:invalid wLength = %d, setup returned\n",
 			__func__, usb_ctrl.wLength);
 
 		s3c_udc_ep0_set_stall(ep);
@@ -1230,7 +1270,8 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 	/* Handle some SETUP packets ourselves */
 	switch (usb_ctrl.bRequest) {
 	case USB_REQ_SET_ADDRESS:
-	DEBUG_SETUP("%s: *** USB_REQ_SET_ADDRESS (%d)\n",
+	if (currentusbstatus == USBSTATUS_VTP)
+		DEBUG_SETUP("%s: *** USB_REQ_SET_ADDRESS (%d)\n",
 			__func__, usb_ctrl.wValue);
 
 		if (usb_ctrl.bRequestType
@@ -1241,7 +1282,9 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 		return;
 
 	case USB_REQ_SET_CONFIGURATION :
+		if (currentusbstatus == USBSTATUS_VTP)
 		DEBUG_SETUP("============================================\n");
+
 		DEBUG_SETUP("%s: USB_REQ_SET_CONFIGURATION (%d)\n",
 				__func__, usb_ctrl.wValue);
 
@@ -1252,11 +1295,13 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 		break;
 
 	case USB_REQ_GET_DESCRIPTOR:
-		DEBUG_SETUP("%s: *** USB_REQ_GET_DESCRIPTOR  \n",__func__);
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("%s: *** USB_REQ_GET_DESCRIPTOR  \n",__func__);
 		break;
 
 	case USB_REQ_SET_INTERFACE:
-		DEBUG_SETUP("%s: *** USB_REQ_SET_INTERFACE (%d)\n",
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("%s: *** USB_REQ_SET_INTERFACE (%d)\n",
 				__func__, usb_ctrl.wValue);
 
 		if (usb_ctrl.bRequestType == USB_RECIP_INTERFACE) {
@@ -1266,35 +1311,34 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 		break;
 
 	case USB_REQ_GET_CONFIGURATION:
-		DEBUG_SETUP("%s: *** USB_REQ_GET_CONFIGURATION  \n",__func__);
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("%s: *** USB_REQ_GET_CONFIGURATION  \n",__func__);
 		break;
 
 	case USB_REQ_GET_STATUS:
 		if (dev->req_std) {
-			if (!s3c_udc_get_status(dev, &usb_ctrl)) {
+			if (!s3c_udc_get_status(dev, &usb_ctrl)) 
 				return;
-			}
 		}
 		break;
 
 	case USB_REQ_CLEAR_FEATURE:
 		ep_num = usb_ctrl.wIndex & 0x7f;
 
-		if (!s3c_udc_clear_feature(&dev->ep[ep_num].ep)) {
+		if (!s3c_udc_clear_feature(&dev->ep[ep_num].ep)) 
 			return;
-		}
 		break;
 
 	case USB_REQ_SET_FEATURE:
 		ep_num = usb_ctrl.wIndex & 0x7f;
 
-		if (!s3c_udc_set_feature(&dev->ep[ep_num].ep)) {
+		if (!s3c_udc_set_feature(&dev->ep[ep_num].ep)) 
 			return;
-		}
 		break;
 
 	default:
-		DEBUG_SETUP("%s: *** Default of usb_ctrl.bRequest=0x%x happened.\n",
+		if (currentusbstatus == USBSTATUS_VTP)
+			DEBUG_SETUP("%s: *** Default of usb_ctrl.bRequest=0x%x happened.\n",
 				__func__, usb_ctrl.bRequest);
 		break;
 	}
@@ -1302,7 +1346,9 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 	if (likely(dev->driver)) {
 		/* device-2-host (IN) or no data setup command,
 		 * process immediately */
-		DEBUG_SETUP("%s: usb_ctrlrequest will be passed to fsg_setup()\n", __func__);
+		if (currentusbstatus == USBSTATUS_VTP)
+			printk("TETHERING::usb_ctrlrequest will be passed to fsg_setup()\n");
+			DEBUG_SETUP("%s: usb_ctrlrequest will be passed to fsg_setup()\n", __func__);
 
 		spin_unlock(&dev->lock);
 		i = dev->driver->setup(&dev->gadget, &usb_ctrl);
@@ -1310,7 +1356,8 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 
 		if (i < 0) {
 			if (dev->req_config) {
-				DEBUG_SETUP("\tconfig change 0x%02x fail %d?\n",
+				if (currentusbstatus == USBSTATUS_VTP)
+					DEBUG_SETUP("\tconfig change 0x%02x fail %d?\n",
 					(u32)&usb_ctrl.bRequest, i);
 				return;
 			}
@@ -1319,16 +1366,21 @@ static void s3c_ep0_setup(struct s3c_udc *dev)
 			s3c_udc_ep0_set_stall(ep);
 			dev->ep0state = WAIT_FOR_SETUP;
 
-			DEBUG_SETUP("\tdev->driver->setup failed (%d), bRequest = %d\n",
+			if (currentusbstatus == USBSTATUS_VTP)
+				DEBUG_SETUP("\tdev->driver->setup failed (%d), bRequest = %d\n",
 				i, usb_ctrl.bRequest);
 
 
 		} else if (dev->req_pending) {
 			dev->req_pending = 0;
-			DEBUG_SETUP("\tdev->req_pending... \n");
+			if (currentusbstatus == USBSTATUS_VTP)
+				printk("TETHERING::dev->req_pending...\n");
+				DEBUG_SETUP("\tdev->req_pending... \n");
 		}
-
-		DEBUG_SETUP("\tep0state = %s\n", state_names[dev->ep0state]);
+		if (currentusbstatus == USBSTATUS_VTP)
+			mdelay(1);
+//			printk("TETHERING::ep0state\n");
+			DEBUG_SETUP("\tep0state = %s\n", state_names[dev->ep0state]);
 
 	}
 }
@@ -1350,7 +1402,10 @@ static void s3c_handle_ep0(struct s3c_udc *dev)
 
 static void s3c_ep0_kick(struct s3c_udc *dev, struct s3c_ep *ep)
 {
-	DEBUG_EP0("%s: ep_is_in = %d\n", __func__, ep_is_in(ep));
+	if (currentusbstatus == USBSTATUS_VTP)
+		mdelay(1);	
+//		printk("TETHERING::s3c_ep0_kick\n");
+		DEBUG_EP0("%s: ep_is_in = %d\n", __func__, ep_is_in(ep));
 	if (ep_is_in(ep)) {
 		dev->ep0state = DATA_STATE_XMIT;
 		s3c_ep0_write(dev);

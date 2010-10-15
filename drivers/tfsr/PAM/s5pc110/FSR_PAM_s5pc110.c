@@ -1,37 +1,18 @@
 /**
- *   @mainpage   Flex Sector Remapper : RFS_1.3.1_b046-LinuStoreIII_1.1.0_b016-FSR_1.1.1_b109_RC
- *
- *   @section Intro
- *       Flash Translation Layer for Flex-OneNAND and OneNAND
- *    
- *    @section  Copyright
- *            COPYRIGHT. 2007 - 2008 SAMSUNG ELECTRONICS CO., LTD.               
- *                            ALL RIGHTS RESERVED                              
- *                                                                             
- *     Permission is hereby granted to licensees of Samsung Electronics        
- *     Co., Ltd. products to use or abstract this computer program for the     
- *     sole purpose of implementing a product based on Samsung                 
- *     Electronics Co., Ltd. products. No other rights to reproduce, use,      
- *     or disseminate this computer program, whether in part or in whole,      
- *     are granted.                                                            
- *                                                                             
- *     Samsung Electronics Co., Ltd. makes no representation or warranties     
- *     with respect to the performance of this computer program, and           
- *     specifically disclaims any responsibility for any damages,              
- *     special or consequential, connected with the use of this program.       
- *
- *     @section Description
- *
+ *---------------------------------------------------------------------------*
+ *                                                                           *
+ * Copyright (C) 2003-2010 Samsung Electronics                               *
+ * This program is free software; you can redistribute it and/or modify      *
+ * it under the terms of the GNU General Public License version 2 as         *
+ * published by the Free Software Foundation.                                *
+ *                                                                           *
+ *---------------------------------------------------------------------------*
  */
 
 /**
- * @file      FSR_PAM_Poseidon.c
- * @brief     This file contain the Platform Adaptation Modules for Poseidon
- * @author    SongHo Yoon
- * @date      15-MAR-2007
- * @remark
- * REVISION HISTORY
- * @n  15-MAR-2007 [SongHo Yoon] : first writing
+ * @version     LinuStoreIII_1.2.0_b035_FSR_1.2.1p1_b129_RC
+ * @file        drivers/tfsr/PAM/s5pc110/FSR_PAM_s5pc110.c
+ * @brief       This file contain the Platform Adaptation Modules for Poseidon
  *
  */
 
@@ -114,9 +95,6 @@
     TNandGpioInterrupt* pNandGpioInterrupt;
 
 #elif defined(FSR_LINUX_OAM)
-
-	#include <asm/io.h>
-	#include <asm/cacheflush.h>
 
     #if defined(TINY_FSR)
         /* Setting at Kernel configuration */
@@ -202,7 +180,6 @@ PRIVATE volatile FlexOneNANDReg *gpOneNANDReg               = (volatile FlexOneN
 #else
 #error  Either FSR_ENABLE_FLEXOND_LFT or FSR_ENABLE_ONENAND_LFT should be defined
 #endif
-PRIVATE UINT32					gnDMABase					= 0;
 
 #ifdef __cplusplus
 extern "C" {
@@ -291,14 +268,10 @@ FSR_PAM_Init(VOID)
         }
 #else
         nONDVirBaseAddr  = FSR_OAM_Pa2Va(FSR_ONENAND_PHY_BASE_ADDR);
-		gnDMABase = FSR_OAM_Pa2Va(FSR_ONENAND_PHY_BASE_ADDR + 0x600000);
 #endif
 
         RTL_PRINT((TEXT("[PAM:   ]   OneNAND physical base address       : 0x%08x\r\n"), FSR_ONENAND_PHY_BASE_ADDR));
         RTL_PRINT((TEXT("[PAM:   ]   OneNAND virtual  base address       : 0x%08x\r\n"), nONDVirBaseAddr));
-
-        RTL_PRINT((TEXT("[PAM:   ]   OneNAND DMA physical base address       : 0x%08x\r\n"), FSR_ONENAND_PHY_BASE_ADDR + 0x600000));
-        RTL_PRINT((TEXT("[PAM:   ]   OneNAND DMA virtual  base address       : 0x%08x\r\n"), gnDMABase));
 
 #if defined(FSR_ENABLE_ONENAND_LFT)
         gpOneNANDReg  = (volatile OneNANDReg *) nONDVirBaseAddr;
@@ -328,18 +301,33 @@ FSR_PAM_Init(VOID)
         }
         else
         {
-            gbFlexOneNAND[0] = FSR_OND_2K_PAGE;
-            gbFlexOneNAND[1] = FSR_OND_2K_PAGE;
-            
-            /* FB mask for supporting Demux and Mux device. */ 
-            if (((gpOneNANDReg->nDID & 0xFB) == 0x50) || ((gpOneNANDReg->nDID & 0xFB) == 0x68))
+
+	    /* Setup page size of OneNAND by checking amount of data buffers, 1 is 4KB page and 2 is 2KB page */
+            if ((gpOneNANDReg->nBufAmount & 0x0F00) == 0x0100)
             {
                 gbFlexOneNAND[0] = FSR_OND_4K_PAGE;
                 gbFlexOneNAND[1] = FSR_OND_4K_PAGE;
             }
 
-            RTL_PRINT((TEXT("[PAM:   ]   OneNAND nMID=0x%2x : nDID=0x%02x\r\n"), 
-                    gpOneNANDReg->nMID, gpOneNANDReg->nDID));
+	    /* Check amount of data buffers whether 2 (2KB page) (1: 4KB page)*/
+            if ((gpOneNANDReg->nBufAmount & 0x0F00) == 0x0100)
+            {
+                gbFlexOneNAND[0] = FSR_OND_4K_PAGE;
+                gbFlexOneNAND[1] = FSR_OND_4K_PAGE;
+            } else if ((gpOneNANDReg->nBufAmount & 0x0F00) == 0x0200)
+	    {
+                gbFlexOneNAND[0] = FSR_OND_2K_PAGE;
+                gbFlexOneNAND[1] = FSR_OND_2K_PAGE;
+            } else 
+	    {
+                RTL_PRINT((TEXT("[PAM:ERR] Not supported OneNAND. Amount of data buffers are %d\r\n"),
+					gpOneNANDReg->nBufAmount >> 8));
+                nRe = FSR_PAM_NAND_PROBE_FAILED;
+		break;
+            }
+
+            RTL_PRINT((TEXT("[PAM:   ]   OneNAND nMID=0x%2x : nDID=0x%02x Page size=%d\r\n"), 
+                    gpOneNANDReg->nMID, gpOneNANDReg->nDID, (gpOneNANDReg->nBufAmount >> 8) == 1 ? 4 : 2));
         }
 
         gstFsrVolParm[0].nBaseAddr[0] = nONDVirBaseAddr;
@@ -586,69 +574,6 @@ FSR_PAM_RegLFT(FSRLowFuncTbl  *pstLFT[FSR_MAX_VOLS])
     return FSR_PAM_SUCCESS;
 }
 
-
-/**
- * _AUDI_DMAStart - [Internal] DMA transfer
- * @param mtd		MTD data structure
- * @param src		Source address
- * @param dest		Destination address
- * @param length	Length in bytes
- * @param direction	Transfer direction (0: In2Out, 1: Out2In)
- *
- * Transfer data through DMA
- * Assumption:
- */
-PRIVATE INT32
-_AUDI_DMAStart(VOID *pSrc, VOID *pDest, UINT32 nSize, UINT32 nDirection)
-{
-	UINT32 DMA_CTL_BASE = gnDMABase + 0x400;
-
-	writel(pSrc, DMA_CTL_BASE + 0x0 /*DMA_SRC_ADDR*/);		// OND_4K_WRITE
-	writel(pDest, DMA_CTL_BASE + 0x8 /*DMA_DST_ADDR*/);
-
-	if (nDirection == 0)
-	{
-		writel(0x40001, DMA_CTL_BASE + 0x4 /*DMA_SRC_CFG*/);	// 16-Burst, Incremental, 16-bit
-		writel(0x40002, DMA_CTL_BASE + 0xC /*DMA_DST_CFG*/);	// 16-Burst, Incremental, 32-bit
-	}
-	else
-	{
-		writel(0x40002, DMA_CTL_BASE + 0x4 /*DMA_SRC_CFG*/);	// 16-Burst, Incremental, 32-bit
-		writel(0x40001, DMA_CTL_BASE + 0xC /*DMA_DST_CFG*/);	// 16-Burst, Incremental, 16-bit
-	}
-
-	writel(nSize, DMA_CTL_BASE + 0x14 /*DMA_TRANS_SIZE*/);
-	writel(nDirection, DMA_CTL_BASE + 0x20 /*DMA_TRANS_DIR*/);	// Internal AHB to External AHB
-
-	writel(0x1, DMA_CTL_BASE + 0x18 /*DMA_TRANS_CMD*/);
-
-	return 0;
-}
-
-PRIVATE INT32
-_AUDI_DMAWait()
-{
-	UINT32 DMA_CTL_BASE = gnDMABase + 0x400;
-	UINT32 nStatus;
-
-	do
-	{
-		nStatus = readl(DMA_CTL_BASE + 0x1C /*DMA_TRANS_STATUS*/);
-	} while (!(nStatus & (1 << 18)));
-
-	if (nStatus & (1 << 16))
-	{
-		printk("DMA error!\n");
-		writel(1 << 16, DMA_CTL_BASE + 0x18 /*DMA_TRANS_CMD*/);
-		writel(1 << 18, DMA_CTL_BASE + 0x18 /*DMA_TRANS_CMD*/);
-		return -2;
-	}
-
-	writel(1 << 18, DMA_CTL_BASE + 0x18 /*DMA_TRANS_CMD*/);
-
-	return 0;
-}
-
 /**
  * @brief           This function transfers data to NAND
  *
@@ -679,25 +604,8 @@ FSR_PAM_TransToNAND(volatile VOID *pDst,
     FSR_ASSERT(((UINT32) pDst & 0x03) == 0x00000000);
     FSR_ASSERT(nSize > sizeof(UINT32));
 
-#if 0
 	FSR_PAM_Memcpy((VOID *)pDst, (VOID *)pSrc, nSize);
-#else
-	/* nSize is the number of bytes to transfer */
-	if ((UINT32)pSrc & 0xFFF)
-	{
-		FSR_PAM_Memcpy((VOID *)pDst, (VOID *)pSrc, nSize);
-	}
-	else
-	{
-		dmac_flush_range(pSrc, pSrc + nSize);
-		//outer_flush_range(__pa(pSrc), __pa(pSrc) + nSize);
-		_AUDI_DMAStart(
-			(VOID *)virt_to_phys(pSrc),
-			(VOID *)(FSR_ONENAND_PHY_BASE_ADDR | ((UINT32)pDst & 0x1FFFF)),
-			nSize, 1);
-		_AUDI_DMAWait();
-	}
-#endif
+	   
 }
 
 /**
@@ -730,27 +638,7 @@ FSR_PAM_TransFromNAND(VOID          *pDst,
     FSR_ASSERT(((UINT32) pDst & 0x03) == 0x00000000);
     FSR_ASSERT(nSize > sizeof(UINT32));
 
-#if 0
 	FSR_PAM_Memcpy((VOID *)pDst, (VOID *)pSrc, nSize);
-#else
-	//if ((UINT32)pDst & 0xFFF)
-	//if (((UINT32)pDst >> 12) != ((UINT32)(pDst + nSize) >> 12))
-	if (0)
-	{
-		FSR_PAM_Memcpy((VOID *)pDst, (VOID *)pSrc, nSize);
-	}
-	else
-	{
-		//dmac_flush_range(pDst, pDst + nSize);
-		//outer_flush_range(__pa(pDst), __pa(pDst) + nSize);
-		_AUDI_DMAStart(
-			(VOID *)(FSR_ONENAND_PHY_BASE_ADDR | ((UINT32)pSrc & 0x1FFFF)),
-			(VOID *)virt_to_phys(pDst),
-			nSize, 0);
-		dmac_inv_range(pDst, pDst + nSize);
-		_AUDI_DMAWait();
-	}
-#endif
 }
 
 /**

@@ -26,8 +26,3 @@ obj-$(CONFIG_INPUT_APMPOWER)	+= apm-power.o
 obj-$(CONFIG_INPUT_KEYRESET)	+= keyreset.o
 
 obj-$(CONFIG_XEN_KBDDEV_FRONTEND)	+= xen-kbdfront.o
-
-#mkh
-obj-$(CONFIG_JUPITER_HEADSET_DETECT) += trs_connector.o 
-
-

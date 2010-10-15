@@ -26,7 +26,7 @@
 #include "s5ka3dfx.h"
 #include <mach/gpio.h>
 #include <plat/gpio-cfg.h>
-#include <plat/regs-gpio.h>
+#include <mach/regs-gpio.h>
 #include <mach/max8998_function.h>
 
 //#define VGA_CAM_DEBUG
@@ -38,9 +38,9 @@
 #define S5KA3DFX_DRIVER_NAME	"S5KA3DFX"
 
 /* Default resolution & pixelformat. plz ref s5ka3dfx_platform.h */
-#define DEFAULT_RES		WVGA	/* Index of resoultion */
+#define DEFAULT_RES			WVGA				/* Index of resoultion */
 #define DEFAUT_FPS_INDEX	S5KA3DFX_15FPS
-#define DEFAULT_FMT		V4L2_PIX_FMT_UYVY	/* YUV422 */
+#define DEFAULT_FMT			V4L2_PIX_FMT_UYVY	/* YUV422 */
 
 /*
  * Specification
@@ -108,7 +108,7 @@ static inline struct s5ka3dfx_state *to_state(struct v4l2_subdev *sd)
 }
 
 //s1_camera [ Defense process by ESD input ] _[
-static int s5ka3dfx_power_on()
+static int s5ka3dfx_power_on(void)
 {
 	int err;
 
@@ -132,7 +132,6 @@ static int s5ka3dfx_power_on()
 		return err;
 	}
 
-#if defined CONFIG_ARIES_VER_B1 ||(defined CONFIG_ARIES_VER_B2) || (defined CONFIG_ARIES_VER_B3)
 	/* CAM_IO_EN - GPB(7) */
 	err = gpio_request(GPIO_GPB7, "GPB7");
 
@@ -167,51 +166,6 @@ static int s5ka3dfx_power_on()
 	mdelay(1);
 	
 	gpio_free(GPIO_GPB7);	
-#elif defined CONFIG_JUPITER_VER_B5 || defined CONFIG_ARIES_VER_B0
-	// Turn CAM_ISP_1.2V on
-	Set_MAX8998_PM_OUTPUT_Voltage(BUCK4, VCC_1p300);
-	Set_MAX8998_PM_REG(EN4, 1);
-
-	mdelay(1);
-
-	// Turn CAM_SENSOR_A2.8V on
-	Set_MAX8998_PM_OUTPUT_Voltage(LDO13, VCC_2p800);
-	Set_MAX8998_PM_REG(ELDO13, 1);
-
-	mdelay(1);
-
-	// Turn CAM_ISP_2.8V on
-	Set_MAX8998_PM_OUTPUT_Voltage(LDO15, VCC_2p800);
-	Set_MAX8998_PM_REG(ELDO15, 1);
-
-	mdelay(1);
-
-	// Turn CAM_ISP_1.8V on
-	Set_MAX8998_PM_OUTPUT_Voltage(LDO14, VCC_1p800);
-	Set_MAX8998_PM_REG(ELDO14, 1);
-	
-	mdelay(1);
-
-	// Turn CAM_ISP_1.2V off
-	Set_MAX8998_PM_REG(EN4, 0);
-#else	/* CONFIG_JUPITER_VER_B5 */
-	// Turn CAM_A_2.8V on
-	Set_MAX8998_PM_OUTPUT_Voltage(LDO13, VCC_2p800);
-	Set_MAX8998_PM_REG(ELDO13, 1);
-
-	mdelay(1);
-
-	// Turn CAM_D_2.8V on
-	Set_MAX8998_PM_OUTPUT_Voltage(LDO11, VCC_2p800);
-	Set_MAX8998_PM_REG(ELDO11, 1);
-
-	mdelay(1);
-
-	// Turn CAM_IO_1.8V on
-	Set_MAX8998_PM_OUTPUT_Voltage(LDO14, VCC_1p800);
-	Set_MAX8998_PM_REG(ELDO14, 1);
-#endif	/* CONFIG_JUPITER_VER_B5 */
-
 	mdelay(1);
 
 	// CAM_VGA_nSTBY  HIGH		
@@ -221,7 +175,7 @@ static int s5ka3dfx_power_on()
 	mdelay(1);
 
 	// Mclk enable
-	s3c_gpio_cfgpin(GPIO_CAM_MCLK, S5PC11X_GPE1_3_CAM_A_CLKOUT);
+	s3c_gpio_cfgpin(GPIO_CAM_MCLK, S5PV210_GPE1_3_CAM_A_CLKOUT);
 
 	mdelay(1);
 
@@ -238,7 +192,7 @@ static int s5ka3dfx_power_on()
 }
 
 
-static int s5ka3dfx_power_off()
+static int s5ka3dfx_power_off(void)
 {
 	int err;
 
@@ -280,7 +234,6 @@ static int s5ka3dfx_power_off()
 
 	mdelay(1);
 
-#if defined CONFIG_ARIES_VER_B1 ||(defined CONFIG_ARIES_VER_B2) || (defined CONFIG_ARIES_VER_B3)
 	/* CAM_IO_EN - GPB(7) */
 	err = gpio_request(GPIO_GPB7, "GPB7");
 
@@ -306,29 +259,6 @@ static int s5ka3dfx_power_off()
 	gpio_set_value(GPIO_GPB7, 0);
 	
 	gpio_free(GPIO_GPB7);
-#elif defined CONFIG_JUPITER_VER_B5 || defined CONFIG_ARIES_VER_B0
-	// Turn CAM_ISP_2.8V off
-	Set_MAX8998_PM_REG(ELDO15, 0);
-
-	mdelay(1);
-
-	// Turn CAM_SENSOR_A2.8V off
-	Set_MAX8998_PM_REG(ELDO13, 0);
-
-	// Turn CAM_ISP_1.8V off
-	Set_MAX8998_PM_REG(ELDO14, 0);
-#else	/* CONFIG_JUPITER_VER_B5 */
-	// Turn CAM_D_2.8V off
-	Set_MAX8998_PM_REG(ELDO11, 0);
-
-	mdelay(1);
-
-	// Turn CAM_A_2.8V off
-	Set_MAX8998_PM_REG(ELDO13, 0);
-
-	// Turn CAM_IO_1.8V off
-	Set_MAX8998_PM_REG(ELDO14, 0);
-#endif	/* CONFIG_JUPITER_VER_B5 */
 
 	gpio_free(GPIO_CAM_VGA_nSTBY);
 	gpio_free(GPIO_CAM_VGA_nRST);	
@@ -431,7 +361,7 @@ static int s5ka3dfx_i2c_write(struct v4l2_subdev *sd, unsigned char i2c_data[],
 
 	return (ret == 1) ? 0 : -EIO;
 }
-
+#if 0	/* unused functions */
 static int s5ka3dfx_write_regs(struct v4l2_subdev *sd, unsigned char regs[], 
 				int size)
 {
@@ -453,7 +383,7 @@ static int s5ka3dfx_write_regs(struct v4l2_subdev *sd, unsigned char regs[],
 
 	return 0;	/* FIXME */
 }
-
+#endif	/* unused functions */
 #if 0	// temporary delete
 static const char *s5ka3dfx_querymenu_wb_preset[] = {
 	"WB Tungsten", "WB Fluorescent", "WB sunny", "WB cloudy", NULL
@@ -731,7 +661,7 @@ static int s5ka3dfx_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param
 
 	return err;
 }
-
+#if 0	/* unused functions */
 static int s5ka3dfx_get_framesize_index(struct v4l2_subdev *sd)
 {
 	int i = 0;
@@ -753,7 +683,8 @@ static int s5ka3dfx_get_framesize_index(struct v4l2_subdev *sd)
 	/* FIXME: If it fails, return the last index. */
 	return s5ka3dfx_framesize_list[i-1].index;
 }
-
+#endif	/* unused functions */
+#if 0	/* unused function */
 /* This function is called from the s_ctrl api
  * Given the index, it checks if it is a valid index.
  * On success, it returns 0.
@@ -780,15 +711,13 @@ static int s5ka3dfx_set_framesize_index(struct v4l2_subdev *sd, unsigned int ind
 	
 	return -EINVAL;
 }
-
+#endif	/* unused functions */
 /* set sensor register values for adjusting brightness */
 static int s5ka3dfx_set_brightness(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct s5ka3dfx_state *state = to_state(sd);
-	struct s5ka3dfx_userset userset = state->userset;
 
-	int i = 0;
 	int err = -EINVAL;
 	int ev_value = 0;
 
@@ -1258,7 +1187,7 @@ static int s5ka3dfx_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 	struct s5ka3dfx_userset userset = state->userset;
 	int err = -EINVAL;
 
-	dev_dbg(&client->dev, "%s: id : 0x%08lx \n", __func__, ctrl->id);
+	dev_dbg(&client->dev, "%s: id : 0x%08x \n", __func__, ctrl->id);
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
@@ -1319,7 +1248,7 @@ static int s5ka3dfx_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 
 	int err = -EINVAL;
 
-	printk(KERN_DEBUG "s5ka3dfx_s_ctrl() : ctrl->id 0x%08lx, ctrl->value %d \n",ctrl->id, ctrl->value);
+	printk(KERN_DEBUG "s5ka3dfx_s_ctrl() : ctrl->id 0x%08x, ctrl->value %d \n",ctrl->id, ctrl->value);
 
 	switch (ctrl->id) {
 

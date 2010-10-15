@@ -674,7 +674,7 @@ static void mfc_set_encode_init_param(mfc_inst_ctx *mfc_ctx, mfc_args *args)
 
 			case 2:
 				WRITEL(0x3, MFC_ENC_MSLICE_CTRL);
-				WRITEL(ms_size, MFC_ENC_MSLICE_BYTE);
+				WRITEL(ms_size, MFC_ENC_MSLICE_BYTE); // MFC_ENC_MSLICE_BYTE should be change MFC_ENC_MSLICE_BIT 
 				break;
 
 			default:
@@ -699,7 +699,7 @@ static void mfc_set_encode_init_param(mfc_inst_ctx *mfc_ctx, mfc_args *args)
 
 	/* Set Rate Control */
 	if (enc_init_mpeg4_arg->in_RC_frm_enable)
-	{
+	{     
 		WRITEL(enc_init_mpeg4_arg->in_RC_framerate, MFC_RC_FRAME_RATE);
 		WRITEL(enc_init_mpeg4_arg->in_RC_bitrate, MFC_RC_BIT_RATE);
 		WRITEL(enc_init_mpeg4_arg->in_RC_rpara, MFC_RC_RPARA);
@@ -781,18 +781,21 @@ static void mfc_set_encode_init_param(mfc_inst_ctx *mfc_ctx, mfc_args *args)
 
 int mfc_load_firmware()
 {
-	volatile unsigned char *fw_virbuf;
+     volatile unsigned char *fw_virbuf;
 
-	mfc_debug("mfc_load_firmware : MFC F/W Loading Start.................\n");
+     mfc_debug("mfc_load_firmware : MFC F/W Loading Start.................\n");
 
-	fw_virbuf = mfc_get_fw_buff_vaddr();
-	memset((void *)fw_virbuf,0, MFC_FW_MAX_SIZE);
-	memcpy((void *)fw_virbuf, mfc_fw_code, mfc_fw_code_len);
+     fw_virbuf = mfc_get_fw_buff_vaddr();
+     memset((void *)fw_virbuf,0, MFC_FW_MAX_SIZE);
+     dmac_clean_range(fw_virbuf, fw_virbuf + MFC_FW_MAX_SIZE); 
+     memcpy((void *)fw_virbuf, mfc_fw_code, mfc_fw_code_len);
+     dmac_clean_range(fw_virbuf, fw_virbuf + mfc_fw_code_len); 
 
-	mfc_debug("mfc_load_firmware : MFC F/W Loading Stop.................(fw_virbuf: 0x%08x)\n", fw_virbuf);
-	
-	return 0;
+     mfc_debug("mfc_load_firmware : MFC F/W Loading Stop.................(fw_virbuf: 0x%08x)\n", fw_virbuf);
+ 
+     return 0;
 }
+
 
 MFC_ERROR_CODE mfc_init_hw()
 {
@@ -890,7 +893,7 @@ MFC_FW_RESET:
 			{
 				mfc_err("MFCINST_ERR_FW_LOAD_FAIL\n");
 				return MFCINST_ERR_FW_LOAD_FAIL;
-			}	
+			}
 			
 			if(nFWLoadCnt == 0)
 			{
@@ -1713,6 +1716,9 @@ static MFC_ERROR_CODE mfc_decode_one_frame(mfc_inst_ctx *mfc_ctx, mfc_dec_exe_ar
 		makefile_mfc_dec_err_info(mfc_ctx, dec_arg, nReturnErrCode);		
 #endif			
 #endif
+		//Clear start_byte_num in case of error 2010.07.21
+		mfc_ctx->shared_mem.start_byte_num = 0x0;
+		mfc_write_shared_mem(mfc_ctx->shared_mem_vaddr, &(mfc_ctx->shared_mem));
 
 #if ENABLE_MFC_REGISTER_DEBUG
 		mfc_fw_debug(R2H_CMD_FRAME_DONE_RET);
@@ -2605,21 +2611,23 @@ void makefile_mfc_enc_err_info(mfc_enc_exe_arg *enc_arg)
 	int nFrameSize = 0;
 	char fileName[50];
 	unsigned char *pLinearbuf;
-	 unsigned char *mfc_enc_in_base_vaddr;
-	
+	 unsigned char *mfc_enc_in_base_Y_vaddr;
+	 unsigned char *mfc_enc_in_base_CbCr_vaddr;	
 	mframe_cnt++;
 
 	memset(fileName, 0, 50);
 	sprintf(fileName, "/data/enc_in/mfc_in_%04d.yuv", mframe_cnt);			
-	nFrameSize = mImgHight*mImgWidth;
+	nFrameSize = mImgHight*mImgWidth*3/2;
 	pLinearbuf = kmalloc(nFrameSize, GFP_KERNEL);
 			
-	mfc_enc_in_base_vaddr =phys_to_virt(enc_arg->in_Y_addr);
+	mfc_enc_in_base_Y_vaddr =phys_to_virt(enc_arg->in_Y_addr);
+	mfc_enc_in_base_CbCr_vaddr =phys_to_virt(enc_arg->in_CbCr_addr);	
 
 	mfc_debug("enc_arg->in_Y_addr : 0x%08x enc_arg->in_Y_addr_vir :0x%08x \r\n",
-			enc_arg->in_Y_addr, mfc_enc_in_base_vaddr);
+			enc_arg->in_Y_addr, mfc_enc_in_base_Y_vaddr);
 			
-	tile_to_linear_4x2(pLinearbuf,mfc_enc_in_base_vaddr, mImgWidth,mImgHight);
+	tile_to_linear_4x2(pLinearbuf,mfc_enc_in_base_Y_vaddr, mImgWidth,mImgHight);
+	tile_to_linear_4x2(pLinearbuf+(mImgHight*mImgWidth), mfc_enc_in_base_CbCr_vaddr, mImgWidth,mImgHight/2);	
 	write_file(fileName, pLinearbuf,nFrameSize);
 			
 	kfree(pLinearbuf);		
@@ -2657,19 +2665,19 @@ static int CheckDecStartCode(unsigned char *src_mem, unsigned int nstreamSize, S
 	if(nFlag != 0xFF){
 		if(nstreamSize > 3){
 			if(nstreamSize > isearchSize)	
-				{
+			{
 					for(index = 0; index < isearchSize-3; index++)	{		
 						if((src_mem[index] == 0x00) && (src_mem[index+1] == 0x00) && ((src_mem[index+2] >> nShift) == nFlag))				
 							return index;
 					}							
-				}
-				else
-				{
+			}
+			else
+			{
 					for(index = 0; index < nstreamSize - 3; index++)	{		
 						if((src_mem[index] == 0x00) && (src_mem[index+1] == 0x00) && ((src_mem[index+2] >> nShift) == nFlag))				
 							return index;
 					}	
-				}
+			}
 		}
 		else
 			return -1;		
